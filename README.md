@@ -23,7 +23,7 @@ docker run -d \
   -e TZ=America/New_York \
   -e BACKUP_TIME="3:00 AM" \
   -v ./server-data:/home/ubuntu/Steam \
-  andyaltsys/dragonwilds:latest
+  andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
 ### Docker Compose
@@ -31,7 +31,7 @@ docker run -d \
 ```yaml
 services:
   dragonwilds:
-    image: andyaltsys/dragonwilds:latest
+    image: andyaltsys/dragonwilds-dedicated-server:latest
     container_name: dragonwilds
     ports:
       - "7777:7777/udp"
@@ -68,7 +68,7 @@ Then update docker-compose.yml to use `env_file`:
 ```yaml
 services:
   dragonwilds:
-    image: andyaltsys/dragonwilds:latest
+    image: andyaltsys/dragonwilds-dedicated-server:latest
     container_name: dragonwilds
     ports:
       - "7777:7777/udp"
@@ -115,7 +115,7 @@ docker run -d \
   -e BACKUP_TIME="3:00 AM" \
   -e TZ=America/New_York \
   -v ./server-data:/home/ubuntu/Steam \
-  andyaltsys/dragonwilds:latest
+  andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
 ### Disable All Backups
@@ -128,7 +128,7 @@ docker run -d \
   -e BACKUP_AFTER_UPDATE=false \
   -e BACKUP_DAILY=false \
   -v ./server-data:/home/ubuntu/Steam \
-  andyaltsys/dragonwilds:latest
+  andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
 ### Disable Auto-Update, Keep Daily Backup Only
@@ -143,7 +143,7 @@ docker run -d \
   -e BACKUP_TIME="3:00 AM" \
   -e TZ=Europe/London \
   -v ./server-data:/home/ubuntu/Steam \
-  andyaltsys/dragonwilds:latest
+  andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
 ## Accessing Server Files

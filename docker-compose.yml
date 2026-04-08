@@ -1,6 +1,6 @@
 services:
   dragonwilds:
-    image: dragonwilds:latest
+    image: andyaltsys/dragonwilds-dedicated-server:latest
     container_name: dragonwilds
     ports:
       - "${SERVER_PORT}:${SERVER_PORT}/udp"
