@@ -3,6 +3,7 @@
 ![Docker Pulls](https://img.shields.io/docker/pulls/andyaltsys/dragonwilds-dedicated-server)
 ![GitHub Release](https://img.shields.io/github/v/release/andyaltsys/dragonwilds-dedicated-server-docker)
 ![GitHub Issues](https://img.shields.io/github/issues/andyaltsys/dragonwilds-dedicated-server-docker)
+![License](https://img.shields.io/github/license/andyaltsys/dragonwilds-dedicated-server-docker)
 
 A production-ready Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
 
@@ -32,6 +33,16 @@ When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh
 
 All backups and updates **skip if players are present** to avoid interrupting gameplay.
 
+## Feature Implementation
+
+The following features are implemented in `scripts/entrypoint-wrapper.sh`:
+
+- **Auto-updates** — [Lines 141-186](scripts/entrypoint-wrapper.sh#L141) — Uses SteamCMD to check and install updates
+- **Daily backups** — [Lines 113-138](scripts/entrypoint-wrapper.sh#L113) — Scheduled backup at configured time
+- **Post-update backups** — [Lines 173-179](scripts/entrypoint-wrapper.sh#L173) — Backs up after each update
+- **Player monitoring** — [Lines 189-231](scripts/entrypoint-wrapper.sh#L189) — Watches server log for connections
+- **Discord notifications** — [Lines 32-37](scripts/entrypoint-wrapper.sh#L32) — Sends webhook alerts
+
 ## Version v0.1.0
 
 This release includes:
@@ -41,6 +52,14 @@ This release includes:
 - Discord webhook notifications (optional)
 - Config preservation across updates
 - Idle-time aware backup/update logic
+
+## Behind the Scenes
+
+- Installs Dragonwilds Dedicated Server via SteamCMD (AppID 4019830)
+- Runs the server on container startup
+- Monitors player connections via server log parsing
+- Performs backups before shutdown when no players are present
+- Sends Discord alerts via webhook when configured
 
 ## Quick Start
 
