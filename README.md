@@ -1,15 +1,46 @@
 # Dragonwilds Dedicated Server Docker Image
 
-A Docker container for running a dedicated Dragonwilds game server with automated updates, backups, and Discord notifications.
+![Docker Pulls](https://img.shields.io/docker/pulls/andyaltsys/dragonwilds-dedicated-server)
+![GitHub Release](https://img.shields.io/github/v/release/andyaltsys/dragonwilds-dedicated-server-docker)
+![GitHub Issues](https://img.shields.io/github/issues/andyaltsys/dragonwilds-dedicated-server-docker)
 
-## Features
+A production-ready Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
 
-- **Auto-updates**: Automatically checks for and installs server updates (hourly by default)
-- **Daily backups**: Scheduled backups at a configurable time
-- **Post-update backups**: Automatic backup after each server update
-- **Player monitoring**: Tracks player connections/disconnections
-- **Discord notifications**: Alerts for updates, backups, and player events
-- **Config preservation**: Keeps your server configuration across updates
+## What This Actually Installs
+
+This image uses **SteamCMD** to download and install the **official RuneScape: Dragonwilds Dedicated Server** (Steam AppID: `4019830`). The dedicated server is a separate product distributed by Steam — this container simply automates running and maintaining it.
+
+The image includes:
+- Ubuntu 24.04 base with 32-bit compatibility libraries
+- SteamCMD for server installation and updates
+- Entry point script that orchestrates updates, backups, and monitoring
+
+## Behavior at Startup
+
+When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh`) performs these steps:
+
+1. **Server Installation/Update** — If no server files exist, SteamCMD downloads the Dragonwilds dedicated server. On subsequent starts, SteamCMD checks for updates.
+2. **Server Launch** — Starts the dedicated server on the configured UDP port
+3. **Player Monitoring** — Continuously watches the server log for player connections/disconnections
+4. **Idle Monitoring** — Tracks the last player activity timestamp to determine when the server is idle
+
+### Scheduled Tasks (run when server is idle for 6+ minutes)
+
+- **Auto-updates** — Checks for SteamCMD updates hourly (configurable)
+- **Daily backups** — At configured time, stops server, backs up SaveGames, restarts
+- **Post-update backups** — After each server update, automatically backs up saves
+
+All backups and updates **skip if players are present** to avoid interrupting gameplay.
+
+## Version v0.1.0
+
+This release includes:
+- Core server automation via SteamCMD
+- Daily and post-update backup functionality
+- Player connection monitoring
+- Discord webhook notifications (optional)
+- Config preservation across updates
+- Idle-time aware backup/update logic
 
 ## Quick Start
 
@@ -101,6 +132,26 @@ services:
 |------|-------------|
 | `/home/ubuntu/Steam` | Server files, saves, and backups |
 
+## Accessing Server Files
+
+The server files are stored in the mounted volume at:
+- **Saves**: `/home/ubuntu/Steam/RSDragonwilds/Saved/SaveGames`
+- **Config**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
+- **Logs**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Logs/`
+- **Backups**: `/home/ubuntu/Steam/backup/`
+
+## Logs
+
+View container logs:
+```bash
+docker logs dragonwilds
+```
+
+View entrypoint script logs (inside container):
+```bash
+docker exec dragonwilds cat /home/ubuntu/Steam/RSDragonwilds/Saved/Logs/entrypoint.log
+```
+
 ## Examples
 
 ### With Discord Notifications
@@ -146,29 +197,6 @@ docker run -d \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
-## Accessing Server Files
+## License
 
-The server files are stored in the mounted volume at:
-- **Saves**: `/home/ubuntu/Steam/RSDragonwilds/Saved/SaveGames`
-- **Config**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
-- **Logs**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Logs/`
-- **Backups**: `/home/ubuntu/Steam/backup/`
-
-## Logs
-
-View container logs:
-```bash
-docker logs dragonwilds
-```
-
-View entrypoint script logs (inside container):
-```bash
-docker exec dragonwilds cat /home/ubuntu/Steam/RSDragonwilds/Saved/Logs/entrypoint.log
-```
-
-## Behavior
-
-- **Update logic**: Waits for 6 minutes of idle time (no players) before running updates
-- **Backup logic**: Scheduled daily backup waits for idle time, stops server, backs up saves, restarts
-- **Both backups and updates are skipped if players are active**
-- Post-update backups run regardless of scheduled backup time
+MIT License - See LICENSE file for details.
