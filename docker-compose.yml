@@ -1,0 +1,11 @@
+services:
+  dragonwilds:
+    image: dragonwilds:latest
+    container_name: dragonwilds
+    ports:
+      - "${SERVER_PORT}:${SERVER_PORT}/udp"
+    env_file:
+      - .env
+    volumes:
+    - ./server:/home/ubuntu/Steam
+    restart: unless-stopped
