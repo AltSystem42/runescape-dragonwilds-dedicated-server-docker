@@ -4,6 +4,7 @@
 ![GitHub Release](https://img.shields.io/github/v/release/AltSystem42/dragonwilds-dedicated-server-docker)
 ![GitHub Issues](https://img.shields.io/github/issues/AltSystem42/dragonwilds-dedicated-server-docker)
 ![License](https://img.shields.io/github/license/AltSystem42/dragonwilds-dedicated-server-docker)
+![Docker Build](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/actions/workflows/docker-build.yml/badge.svg)
 
 A production-ready Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
 
