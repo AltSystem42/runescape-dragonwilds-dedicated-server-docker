@@ -19,9 +19,13 @@ IDLE_WAIT=360
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
+UPDATE_DELAY=10
 if [ "$BACKUP_DAILY" = "true" ]; then
     last_backup_date=""
     backup_window_date=""
+fi
+if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
+    update_window_date=""
 fi
 BACKUP_DAILY="${BACKUP_DAILY:-true}"
 BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"
@@ -99,36 +103,54 @@ parse_backup_time() {
     echo "$hour $minute"
 }
 
+# --- PARSE UPDATE TIME (backup time + delay) ---
+parse_update_time() {
+    parsed=$(parse_backup_time)
+    target_hour=$(echo "$parsed" | cut -d' ' -f1)
+    target_minute=$(echo "$parsed" | cut -d' ' -f2)
+    
+    target_minute=$((target_minute + UPDATE_DELAY))
+    if [ "$target_minute" -ge 60 ]; then
+        target_hour=$((target_hour + 1))
+        target_minute=$((target_minute - 60))
+    fi
+    
+    if [ "$target_hour" -ge 24 ]; then
+        target_hour=$((target_hour - 24))
+    fi
+    
+    echo "$target_hour $target_minute"
+}
+
+# --- WAIT FOR IDLE STATE ---
+wait_for_idle() {
+    while true; do
+        now=$(date +%s)
+        last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+        idle=$((now - last_activity))
+        player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+        
+        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
+            log "Server idle for ${IDLE_WAIT}s with no players."
+            return 0
+        fi
+        
+        if [ "$player_count" -gt 0 ]; then
+            log "Player(s) online, waiting for idle... (check again in ${IDLE_WAIT}s)"
+        else
+            log "Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
+        fi
+        sleep "$IDLE_WAIT"
+    done
+}
+
 # --- RUN DAILY BACKUP ---
 run_daily_backup() {
     log "=== Scheduled daily backup time reached ==="
     send_discord "📦 Scheduled daily backup starting..."
     
     log "⏳ Waiting for idle state before backup..."
-    while true; do
-        now=$(date +%s)
-        if [ -f "$LAST_ACTIVITY_FILE" ]; then
-            last_activity=$(cat "$LAST_ACTIVITY_FILE")
-        fi
-        idle=$((now - last_activity))
-        
-        player_count=0
-        if [ -f "$PLAYER_COUNT_FILE" ]; then
-            player_count=$(cat "$PLAYER_COUNT_FILE")
-        fi
-        
-        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
-            log "Server idle for $IDLE_WAIT seconds with no players, safe to backup."
-            break
-        fi
-        
-        if [ "$player_count" -gt 0 ]; then
-            log "Player(s) online, waiting... (next check in ${IDLE_WAIT}s)"
-        else
-            log "Waiting for ${IDLE_WAIT}s idle time... (${idle}s elapsed)"
-        fi
-        sleep "$IDLE_WAIT"
-    done
+    wait_for_idle
     
     log "=== Stopping server for daily backup ==="
     stop_server
@@ -160,6 +182,10 @@ run_update() {
     if [ "$LOCAL_BUILD" != "$REMOTE_BUILD" ]; then
         log "Update available — running SteamCMD"
         send_discord "🛠️ Dragonwilds server update detected. Updating now..."
+        
+        log "⏳ Waiting for idle state before update..."
+        wait_for_idle
+        
         stop_server
 
         for i in {1..5}; do
@@ -278,47 +304,72 @@ fi
 
 if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
     while true; do
-        if [ "$BACKUP_DAILY" = "true" ]; then
-            while true; do
-                parsed=$(parse_backup_time)
-                target_hour=$(echo "$parsed" | cut -d' ' -f1)
-                target_minute=$(echo "$parsed" | cut -d' ' -f2)
-                current_hour=$(date +%-H)
-                current_minute=$(date +%-M)
-                
-                today=$(date +%Y-%m-%d)
-                
-                in_backup_window=false
-                if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    in_backup_window=true
-                    backup_window_date="$today"
-                elif [ "$backup_window_date" = "$today" ]; then
-                    in_backup_window=true
-                fi
-                
-                if [ "$in_backup_window" = "true" ]; then
-                    if [ "$today" != "$last_backup_date" ]; then
-                        now=$(date +%s)
-                        if [ -f "$LAST_ACTIVITY_FILE" ]; then
-                            last_activity=$(cat "$LAST_ACTIVITY_FILE")
-                        fi
-                        idle=$((now - last_activity))
-                        if [ "$idle" -ge "$IDLE_WAIT" ]; then
-                            run_daily_backup
-                            last_backup_date=$(date +%Y-%m-%d)
-                            backup_window_date=""
-                        else
-                            log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
-                        fi
-                    fi
-                fi
-                
-                sleep 5
-            done
+        today=$(date +%Y-%m-%d)
+        current_hour=$(date +%-H)
+        current_minute=$(date +%-M)
+        
+        backup_parsed=$(parse_backup_time)
+        backup_hour=$(echo "$backup_parsed" | cut -d' ' -f1)
+        backup_minute=$(echo "$backup_parsed" | cut -d' ' -f2)
+        
+        update_parsed=$(parse_update_time)
+        update_hour=$(echo "$update_parsed" | cut -d' ' -f1)
+        update_minute=$(echo "$update_parsed" | cut -d' ' -f2)
+        
+        in_backup_window=false
+        if [ "$current_hour" -eq "$backup_hour" ] && [ "$current_minute" -eq "$backup_minute" ]; then
+            in_backup_window=true
+            backup_window_date="$today"
+        elif [ "$backup_window_date" = "$today" ]; then
+            in_backup_window=true
         fi
         
-        log "=== Running scheduled update check ==="
-        run_update
+        in_update_window=false
+        if [ "$current_hour" -eq "$update_hour" ] && [ "$current_minute" -eq "$update_minute" ]; then
+            in_update_window=true
+            update_window_date="$today"
+        elif [ "$update_window_date" = "$today" ]; then
+            in_update_window=true
+        fi
+        
+        if [ "$BACKUP_DAILY" = "true" ] && [ "$in_backup_window" = "true" ]; then
+            if [ "$today" != "$last_backup_date" ]; then
+                now=$(date +%s)
+                last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+                idle=$((now - last_activity))
+                player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+                
+                if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
+                    run_daily_backup
+                    last_backup_date=$(date +%Y-%m-%d)
+                    backup_window_date=""
+                else
+                    if [ "$player_count" -gt 0 ]; then
+                        log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
+                    else
+                        log "Backup: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
+                    fi
+                fi
+            fi
+        fi
+        
+        if [ "$in_update_window" = "true" ]; then
+            now=$(date +%s)
+            last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+            idle=$((now - last_activity))
+            player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+            
+            if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
+                log "=== Running scheduled update check ==="
+                run_update
+            else
+                if [ "$player_count" -gt 0 ]; then
+                    log "Update: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
+                else
+                    log "Update: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
+                fi
+            fi
+        fi
         
         log "Next check in ${UPDATE_TIME} seconds..."
         sleep "$UPDATE_TIME"
@@ -346,16 +397,20 @@ else
                 if [ "$in_backup_window" = "true" ]; then
                     if [ "$today" != "$last_backup_date" ]; then
                         now=$(date +%s)
-                        if [ -f "$LAST_ACTIVITY_FILE" ]; then
-                            last_activity=$(cat "$LAST_ACTIVITY_FILE")
-                        fi
+                        last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
                         idle=$((now - last_activity))
-                        if [ "$idle" -ge "$IDLE_WAIT" ]; then
+                        player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+                        
+                        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
                             run_daily_backup
                             last_backup_date=$(date +%Y-%m-%d)
                             backup_window_date=""
                         else
-                            log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
+                            if [ "$player_count" -gt 0 ]; then
+                                log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
+                            else
+                                log "Backup: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
+                            fi
                         fi
                     fi
                 fi
