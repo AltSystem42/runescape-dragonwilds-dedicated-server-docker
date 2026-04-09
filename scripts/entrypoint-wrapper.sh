@@ -258,29 +258,19 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
         should_update=false
         
         if [ "$BACKUP_DAILY" = "true" ]; then
-            log "⏳ Waiting for scheduled backup time or idle state..."
             while true; do
-                now=$(date +%s)
-                idle=$((now - last_activity))
-                
                 parsed=$(parse_backup_time)
                 target_hour=$(echo "$parsed" | cut -d' ' -f1)
                 target_minute=$(echo "$parsed" | cut -d' ' -f2)
                 current_hour=$(date +%-H)
                 current_minute=$(date +%-M)
                 
-                is_backup_time=false
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    is_backup_time=true
-                fi
-                
-                if [ "$is_backup_time" = "true" ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
-                    should_backup=true
-                    break
-                fi
-                
-                if [ "$idle" -ge "$IDLE_WAIT" ]; then
-                    should_update=true
+                    now=$(date +%s)
+                    idle=$((now - last_activity))
+                    if [ "$idle" -ge "$IDLE_WAIT" ]; then
+                        should_backup=true
+                    fi
                     break
                 fi
                 
@@ -291,10 +281,8 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
                 run_daily_backup
             fi
             
-            if [ "$should_update" = "true" ]; then
-                log "=== Running scheduled update check ==="
-                run_update
-            fi
+            log "=== Running scheduled update check ==="
+            run_update
         else
             log "⏳ Waiting for idle state before update..."
             while true; do
@@ -316,24 +304,19 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
 else
     if [ "$BACKUP_DAILY" = "true" ]; then
         while true; do
-            log "⏳ Waiting for scheduled backup time..."
             while true; do
-                now=$(date +%s)
-                idle=$((now - last_activity))
-                
                 parsed=$(parse_backup_time)
                 target_hour=$(echo "$parsed" | cut -d' ' -f1)
                 target_minute=$(echo "$parsed" | cut -d' ' -f2)
                 current_hour=$(date +%-H)
                 current_minute=$(date +%-M)
                 
-                is_backup_time=false
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    is_backup_time=true
-                fi
-                
-                if [ "$is_backup_time" = "true" ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
-                    break
+                    now=$(date +%s)
+                    idle=$((now - last_activity))
+                    if [ "$idle" -ge "$IDLE_WAIT" ]; then
+                        break
+                    fi
                 fi
                 
                 sleep 5
@@ -341,6 +324,7 @@ else
             
             run_daily_backup
             
+            log "Next backup in ${UPDATE_TIME} seconds..."
             sleep "$UPDATE_TIME"
         done
     else
