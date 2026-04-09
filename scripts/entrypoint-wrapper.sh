@@ -9,6 +9,7 @@ BACKUPDIR="$SERVERDIR/backup"
 LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
 LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
+SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 UPDATE_TIME="${UPDATE_TIME:-3600}"
@@ -138,6 +139,7 @@ run_daily_backup() {
     
     log "=== Starting server after daily backup ==="
     start_server
+    echo "1" > "$SERVER_RESTART_FILE"
     send_discord "✅ Daily backup completed, server restarted."
 }
 
@@ -200,9 +202,16 @@ monitor_players() {
 
     sleep 2
 
+    if [ -f "$SERVER_RESTART_FILE" ]; then
+        rm -f "$SERVER_RESTART_FILE"
+        log "Server restarted, resetting log position to read fresh..."
+        LAST_READ=0
+    else
+        LAST_READ=$(wc -l < "$LOG")
+    fi
+
     declare -A ONLINE_PLAYERS
     echo "0" > "$PLAYER_COUNT_FILE"
-    LAST_READ=$(wc -l < "$LOG")
     if [ -f "$LAST_ACTIVITY_FILE" ]; then
         last_activity=$(cat "$LAST_ACTIVITY_FILE")
     else
@@ -238,8 +247,8 @@ monitor_players() {
                     echo "${#ONLINE_PLAYERS[@]}" > "$PLAYER_COUNT_FILE"
                 fi
 
-                if [[ "$line" == *"LogDomMatcherSession: Player Removed from session"* ]]; then
-                    player=$(echo "$line" | sed 's/.*\]-\[//;s/\].*//')
+                if [[ "$line" == *"LogDominionPlayerController: ClientRequestDisconnect"* ]]; then
+                    player=$(echo "$line" | grep -oE 'Character Name\[[^]]+\]' | sed 's/Character Name\[//;s/\]//')
                     if [ -n "$player" ]; then
                         unset ONLINE_PLAYERS["$player"]
                         log "Player disconnected: $player"
