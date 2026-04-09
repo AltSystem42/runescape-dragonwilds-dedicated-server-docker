@@ -5,10 +5,10 @@ FROM ubuntu:24.04
 ARG UID=1000
 ARG GID=1000
 
-# Install dependencies
+# Install dependencies including tzdata
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
-    apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
         lib32gcc-s1 \
         lib32stdc++6 \
         curl \
@@ -17,6 +17,7 @@ RUN dpkg --add-architecture i386 && \
         ca-certificates \
         sudo \
         jq \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Adjust existing ubuntu user/group
@@ -46,16 +47,16 @@ ENV SERVER_PORT=7777
 ENV ENABLE_AUTO_UPDATE=true
 ENV UPDATE_TIME=3600
 ENV BACKUP_RETENTION_DAYS=30
-
-# Backup settings
 ENV BACKUP_AFTER_UPDATE=true
 ENV BACKUP_DAILY=true
 ENV BACKUP_TIME="3:00 AM"
-ENV TZ=UTC
 
 # Discord notifications
 ENV ENABLE_DISCORD_NOTIF=false
 ENV DISCORD_WEBHOOK_URL=""
+
+# Timezone (can be overridden via .env)
+ENV TZ=UTC
 
 # Copy wrapper script only
 COPY scripts/entrypoint-wrapper.sh /home/ubuntu/entrypoint-wrapper.sh
@@ -65,5 +66,11 @@ RUN chmod +x /home/ubuntu/entrypoint-wrapper.sh
 USER ubuntu
 WORKDIR /home/ubuntu
 
-# Default entrypoint is the wrapper
-ENTRYPOINT ["/home/ubuntu/entrypoint-wrapper.sh"]
+# Configure timezone at runtime
+# This ensures TZ from .env works inside the container
+ENTRYPOINT ["/bin/bash", "-c", "\
+if [ -n \"$TZ\" ]; then \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; \
+fi; \
+/home/ubuntu/entrypoint-wrapper.sh \
+"]
