@@ -16,6 +16,9 @@ IDLE_WAIT=360
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
+if [ "$BACKUP_DAILY" = "true" ]; then
+    last_backup_date=""
+fi
 BACKUP_DAILY="${BACKUP_DAILY:-true}"
 BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"
 
@@ -90,23 +93,6 @@ parse_backup_time() {
     fi
     
     echo "$hour $minute"
-}
-
-# --- WAIT FOR SCHEDULED BACKUP TIME ---
-wait_for_backup_time() {
-    parsed=$(parse_backup_time)
-    target_hour=$(echo "$parsed" | cut -d' ' -f1)
-    target_minute=$(echo "$parsed" | cut -d' ' -f2)
-    
-    while true; do
-        current_hour=$(date +%-H)
-        current_minute=$(date +%-M)
-        
-        if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-            return 0
-        fi
-        sleep 30
-    done
 }
 
 # --- RUN DAILY BACKUP ---
@@ -254,9 +240,6 @@ fi
 
 if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
     while true; do
-        should_backup=false
-        should_update=false
-        
         if [ "$BACKUP_DAILY" = "true" ]; then
             while true; do
                 parsed=$(parse_backup_time)
@@ -266,37 +249,25 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
                 current_minute=$(date +%-M)
                 
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    now=$(date +%s)
-                    idle=$((now - last_activity))
-                    if [ "$idle" -ge "$IDLE_WAIT" ]; then
-                        should_backup=true
+                    today=$(date +%Y-%m-%d)
+                    if [ "$today" != "$last_backup_date" ]; then
+                        now=$(date +%s)
+                        idle=$((now - last_activity))
+                        if [ "$idle" -ge "$IDLE_WAIT" ]; then
+                            run_daily_backup
+                            last_backup_date=$(date +%Y-%m-%d)
+                        else
+                            log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
+                        fi
                     fi
-                    break
                 fi
                 
                 sleep 5
             done
-            
-            if [ "$should_backup" = "true" ]; then
-                run_daily_backup
-            fi
-            
-            log "=== Running scheduled update check ==="
-            run_update
-        else
-            log "⏳ Waiting for idle state before update..."
-            while true; do
-                now=$(date +%s)
-                idle=$((now - last_activity))
-                if [ "$idle" -ge "$IDLE_WAIT" ]; then
-                    log "Server idle for $IDLE_WAIT seconds, safe to update."
-                    break
-                fi
-                sleep 5
-            done
-            
-            run_update
         fi
+        
+        log "=== Running scheduled update check ==="
+        run_update
         
         log "Next check in ${UPDATE_TIME} seconds..."
         sleep "$UPDATE_TIME"
@@ -312,19 +283,23 @@ else
                 current_minute=$(date +%-M)
                 
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    now=$(date +%s)
-                    idle=$((now - last_activity))
-                    if [ "$idle" -ge "$IDLE_WAIT" ]; then
-                        break
+                    today=$(date +%Y-%m-%d)
+                    if [ "$today" != "$last_backup_date" ]; then
+                        now=$(date +%s)
+                        idle=$((now - last_activity))
+                        if [ "$idle" -ge "$IDLE_WAIT" ]; then
+                            run_daily_backup
+                            last_backup_date=$(date +%Y-%m-%d)
+                        else
+                            log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
+                        fi
                     fi
                 fi
                 
                 sleep 5
             done
             
-            run_daily_backup
-            
-            log "Next backup in ${UPDATE_TIME} seconds..."
+            log "Next backup check in ${UPDATE_TIME} seconds..."
             sleep "$UPDATE_TIME"
         done
     else
