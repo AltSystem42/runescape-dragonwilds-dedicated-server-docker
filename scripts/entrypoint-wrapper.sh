@@ -7,6 +7,8 @@ SERVERDIR="${SERVERDIR:-/home/ubuntu/Steam}"
 CONFIGFILE="$SERVERDIR/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini"
 BACKUPDIR="$SERVERDIR/backup"
 LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
+LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
+PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 UPDATE_TIME="${UPDATE_TIME:-3600}"
@@ -18,6 +20,7 @@ PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
 if [ "$BACKUP_DAILY" = "true" ]; then
     last_backup_date=""
+    backup_window_date=""
 fi
 BACKUP_DAILY="${BACKUP_DAILY:-true}"
 BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"
@@ -78,7 +81,7 @@ parse_backup_time() {
     local time_str="$BACKUP_TIME"
     local hour minute ampm
     
-    hour=$(echo "$time_str" | sed 's/:\([0-9]*\).*/\1/')
+    hour=$(echo "$time_str" | sed 's/^\([0-9]*\):.*/\1/')
     minute=$(echo "$time_str" | sed 's/.*:\([0-9]*\).*/\1/')
     ampm=$(echo "$time_str" | sed 's/.*\([AP]M\).*/\1/')
     
@@ -103,12 +106,27 @@ run_daily_backup() {
     log "⏳ Waiting for idle state before backup..."
     while true; do
         now=$(date +%s)
+        if [ -f "$LAST_ACTIVITY_FILE" ]; then
+            last_activity=$(cat "$LAST_ACTIVITY_FILE")
+        fi
         idle=$((now - last_activity))
-        if [ "$idle" -ge "$IDLE_WAIT" ]; then
-            log "Server idle for $IDLE_WAIT seconds, safe to backup."
+        
+        player_count=0
+        if [ -f "$PLAYER_COUNT_FILE" ]; then
+            player_count=$(cat "$PLAYER_COUNT_FILE")
+        fi
+        
+        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
+            log "Server idle for $IDLE_WAIT seconds with no players, safe to backup."
             break
         fi
-        sleep 5
+        
+        if [ "$player_count" -gt 0 ]; then
+            log "Player(s) online, waiting... (next check in ${IDLE_WAIT}s)"
+        else
+            log "Waiting for ${IDLE_WAIT}s idle time... (${idle}s elapsed)"
+        fi
+        sleep "$IDLE_WAIT"
     done
     
     log "=== Stopping server for daily backup ==="
@@ -183,8 +201,14 @@ monitor_players() {
     sleep 2
 
     declare -A ONLINE_PLAYERS
+    echo "0" > "$PLAYER_COUNT_FILE"
     LAST_READ=$(wc -l < "$LOG")
-    last_activity=$(date +%s)
+    if [ -f "$LAST_ACTIVITY_FILE" ]; then
+        last_activity=$(cat "$LAST_ACTIVITY_FILE")
+    else
+        last_activity=$(date +%s)
+        echo "$last_activity" > "$LAST_ACTIVITY_FILE"
+    fi
     log_inode=$(stat -c %i "$LOG")
     log "Player monitor started. Watching for new log lines from line $LAST_READ (inode: $log_inode)"
 
@@ -195,6 +219,7 @@ monitor_players() {
             LAST_READ=0
             log_inode=$current_inode
             last_activity=$(date +%s)
+            echo "$last_activity" > "$LAST_ACTIVITY_FILE"
             declare -A ONLINE_PLAYERS
             log "Player monitor reset. Watching for new log lines from line 0 (inode: $log_inode)"
         fi
@@ -209,6 +234,8 @@ monitor_players() {
                     log "Player connected: $player"
                     send_discord "🟢 Player connected: $player"
                     last_activity=$(date +%s)
+                    echo "$last_activity" > "$LAST_ACTIVITY_FILE"
+                    echo "${#ONLINE_PLAYERS[@]}" > "$PLAYER_COUNT_FILE"
                 fi
 
                 if [[ "$line" == *"LogDomMatcherSession: Player Removed from session"* ]]; then
@@ -218,6 +245,8 @@ monitor_players() {
                         log "Player disconnected: $player"
                         send_discord "🔴 Player disconnected: $player"
                         last_activity=$(date +%s)
+                        echo "$last_activity" > "$LAST_ACTIVITY_FILE"
+                        echo "${#ONLINE_PLAYERS[@]}" > "$PLAYER_COUNT_FILE"
                     fi
                 fi
             done
@@ -248,14 +277,27 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
                 current_hour=$(date +%-H)
                 current_minute=$(date +%-M)
                 
+                today=$(date +%Y-%m-%d)
+                
+                in_backup_window=false
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    today=$(date +%Y-%m-%d)
+                    in_backup_window=true
+                    backup_window_date="$today"
+                elif [ "$backup_window_date" = "$today" ]; then
+                    in_backup_window=true
+                fi
+                
+                if [ "$in_backup_window" = "true" ]; then
                     if [ "$today" != "$last_backup_date" ]; then
                         now=$(date +%s)
+                        if [ -f "$LAST_ACTIVITY_FILE" ]; then
+                            last_activity=$(cat "$LAST_ACTIVITY_FILE")
+                        fi
                         idle=$((now - last_activity))
                         if [ "$idle" -ge "$IDLE_WAIT" ]; then
                             run_daily_backup
                             last_backup_date=$(date +%Y-%m-%d)
+                            backup_window_date=""
                         else
                             log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
                         fi
@@ -282,14 +324,27 @@ else
                 current_hour=$(date +%-H)
                 current_minute=$(date +%-M)
                 
+                today=$(date +%Y-%m-%d)
+                
+                in_backup_window=false
                 if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    today=$(date +%Y-%m-%d)
+                    in_backup_window=true
+                    backup_window_date="$today"
+                elif [ "$backup_window_date" = "$today" ]; then
+                    in_backup_window=true
+                fi
+                
+                if [ "$in_backup_window" = "true" ]; then
                     if [ "$today" != "$last_backup_date" ]; then
                         now=$(date +%s)
+                        if [ -f "$LAST_ACTIVITY_FILE" ]; then
+                            last_activity=$(cat "$LAST_ACTIVITY_FILE")
+                        fi
                         idle=$((now - last_activity))
                         if [ "$idle" -ge "$IDLE_WAIT" ]; then
                             run_daily_backup
                             last_backup_date=$(date +%Y-%m-%d)
+                            backup_window_date=""
                         else
                             log "Player active, waiting for idle... (elapsed: ${idle}s of ${IDLE_WAIT}s)"
                         fi
