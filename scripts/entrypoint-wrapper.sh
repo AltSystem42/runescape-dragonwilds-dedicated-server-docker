@@ -199,9 +199,20 @@ monitor_players() {
     declare -A ONLINE_PLAYERS
     LAST_READ=$(wc -l < "$LOG")
     last_activity=$(date +%s)
-    log "Player monitor started. Watching for new log lines from line $LAST_READ"
+    log_inode=$(stat -c %i "$LOG")
+    log "Player monitor started. Watching for new log lines from line $LAST_READ (inode: $log_inode)"
 
     while true; do
+        current_inode=$(stat -c %i "$LOG" 2>/dev/null || echo "$log_inode")
+        if [ "$current_inode" != "$log_inode" ]; then
+            log "Log file recreated (server restarted), resetting read position from $LAST_READ to 0..."
+            LAST_READ=0
+            log_inode=$current_inode
+            last_activity=$(date +%s)
+            declare -A ONLINE_PLAYERS
+            log "Player monitor reset. Watching for new log lines from line 0 (inode: $log_inode)"
+        fi
+
         TOTAL_LINES=$(wc -l < "$LOG")
         NEW_LINES=$((TOTAL_LINES - LAST_READ))
         if [ "$NEW_LINES" -gt 0 ]; then
