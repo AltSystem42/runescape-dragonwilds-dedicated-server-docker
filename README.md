@@ -91,10 +91,16 @@ services:
     environment:
       - SERVER_PORT=7777
       - TZ=America/New_York
-      - BACKUP_TIME="3:00 AM"
+      - ENABLE_DISCORD_NOTIF=false
+      - DISCORD_WEBHOOK_URL=""
       - BACKUP_DAILY=true
+      - BACKUP_TIME="3:00 AM"
       - BACKUP_AFTER_UPDATE=true
+      - BACKUP_RETENTION_DAYS=30
+      - POLL_INTERVAL=60
       - ENABLE_AUTO_UPDATE=true
+      - UPDATE_TIME=3600
+      - IDLE_WAIT=360
     volumes:
       - ./server-data:/home/ubuntu/Steam
     restart: unless-stopped
@@ -218,7 +224,7 @@ docker run -d \
   -e ENABLE_AUTO_UPDATE=false \
   -e BACKUP_DAILY=true \
   -e BACKUP_TIME="3:00 AM" \
-  -e TZ=Europe/London \
+  -e TZ=America/New_York \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
