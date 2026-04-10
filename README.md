@@ -106,15 +106,17 @@ Create a `.env` file:
 
 ```env
 SERVER_PORT=7777
+ENABLE_DISCORD_NOTIF=true
+DISCORD_WEBHOOK_URL="""
 TZ=America/New_York
-BACKUP_TIME="3:00 AM"
 BACKUP_DAILY=true
+BACKUP_TIME="3:00 AM"
 BACKUP_AFTER_UPDATE=true
-ENABLE_AUTO_UPDATE=true
 BACKUP_RETENTION_DAYS=30
+POLL_INTERVAL=60
+ENABLE_AUTO_UPDATE=true
+UPDATE_TIME=3600
 IDLE_WAIT=360
-ENABLE_DISCORD_NOTIF=false
-DISCORD_WEBHOOK_URL=
 ```
 
 Then update docker-compose.yml to use `env_file`:
@@ -145,6 +147,7 @@ services:
 | `BACKUP_DAILY` | true | Run daily scheduled backup |
 | `BACKUP_TIME` | 3:00 AM | Daily backup time (12-hour format with AM/PM) |
 | `BACKUP_RETENTION_DAYS` | 30 | Days to keep backups |
+| `POLL_INTERVAL` | 60 | Seconds between each player monitoring log check |
 | `IDLE_WAIT` | 360 | Seconds to wait for no players before update/backup (default: 6 min) |
 | `ENABLE_DISCORD_NOTIF` | false | Enable Discord webhook notifications |
 | `DISCORD_WEBHOOK_URL` | (empty) | Discord webhook URL |
