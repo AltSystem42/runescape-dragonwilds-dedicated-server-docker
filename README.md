@@ -40,11 +40,11 @@ All backups and updates **skip if players are present** to avoid interrupting ga
 
 The following features are implemented in `scripts/entrypoint-wrapper.sh`:
 
-- **Auto-updates** — [Lines 169-218](scripts/entrypoint-wrapper.sh#L169) — Uses SteamCMD to check and install updates
-- **Daily backups** — [Lines 148-166](scripts/entrypoint-wrapper.sh#L148) — Scheduled backup at configured time
-- **Post-update backups** — [Lines 205-211](scripts/entrypoint-wrapper.sh#L205) — Backs up after each update
-- **Player monitoring** — [Lines 221-292](scripts/entrypoint-wrapper.sh#L221) — Watches server log for connections
-- **Discord notifications** — [Lines 43-48](scripts/entrypoint-wrapper.sh#L43) — Sends webhook alerts
+- **Auto-updates** — [Lines 160-207](scripts/entrypoint-wrapper.sh#L160) — Uses SteamCMD to check and install updates
+- **Daily backups** — [Lines 143-157](scripts/entrypoint-wrapper.sh#L143) — Scheduled backup at configured time
+- **Post-update backups** — [Lines 195-201](scripts/entrypoint-wrapper.sh#L195) — Backs up after each update
+- **Player monitoring** — [Lines 212-295](scripts/entrypoint-wrapper.sh#L212) — Watches server log for connections
+- **Discord notifications** — [Lines 38-43](scripts/entrypoint-wrapper.sh#L38) — Sends webhook alerts
 
 ## Version v0.3.0
 
@@ -107,7 +107,7 @@ Create a `.env` file:
 ```env
 SERVER_PORT=7777
 ENABLE_DISCORD_NOTIF=true
-DISCORD_WEBHOOK_URL="""
+DISCORD_WEBHOOK_URL=""
 TZ=America/New_York
 BACKUP_DAILY=true
 BACKUP_TIME="3:00 AM"
