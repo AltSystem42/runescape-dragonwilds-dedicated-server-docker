@@ -10,26 +10,20 @@ LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
 LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
+LAST_BACKUP_DATE_FILE="$SERVERDIR/.last_backup_date"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
-UPDATE_TIME="${UPDATE_TIME:-3600}"
+UPDATE_TIME="${UPDATE_TIME:-3600}"              # How often (seconds) to check for updates (e.g. 3600 = every hour)
 ENABLE_DISCORD_NOTIF="${ENABLE_DISCORD_NOTIF:-false}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 IDLE_WAIT="${IDLE_WAIT:-360}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
-UPDATE_DELAY=10
-if [ "$BACKUP_DAILY" = "true" ]; then
-    last_backup_date=""
-    backup_window_date=""
-    backup_missed=false
-fi
-if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
-    update_window_date=""
-fi
 BACKUP_DAILY="${BACKUP_DAILY:-true}"
-BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"
+BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"           # Time-of-day to run daily backup (12-hour format)
+POLL_INTERVAL="${POLL_INTERVAL:-60}"            # How often (seconds) the backup loop checks the schedule
+
 
 HOME=/home/ubuntu
 mkdir -p "$BACKUPDIR" "$SERVERDIR/steamapps" "$(dirname "$LOGFILE")"
@@ -59,7 +53,7 @@ start_server() {
 # --- STOP SERVER ---
 stop_server() {
     if ps -p "$SERVER_PID" > /dev/null 2>&1; then
-        log "=== Stopping server for update ==="
+        log "=== Stopping server ==="
         kill "$SERVER_PID"
         wait "$SERVER_PID" || true
     fi
@@ -82,88 +76,84 @@ backup_saves() {
     fi
 }
 
-# --- PARSE BACKUP TIME (12-hour format) ---
-parse_backup_time() {
-    local time_str="$BACKUP_TIME"
+# --- PARSE ANY SCHEDULE TIME (12-hour format) ---
+# Usage: parse_schedule_time "3:00 AM"  →  "3 0"
+#        parse_schedule_time "4:30 PM"  →  "16 30"
+parse_schedule_time() {
+    local time_str="$1"
     local hour minute ampm
-    
-    hour=$(echo "$time_str" | sed 's/^\([0-9]*\):.*/\1/')
-    minute=$(echo "$time_str" | sed 's/.*:\([0-9]*\).*/\1/')
-    ampm=$(echo "$time_str" | sed 's/.*\([AP]M\).*/\1/')
-    
-    hour=$(echo "$hour" | tr -d ' ')
-    minute=$(echo "$minute" | tr -d ' ')
-    ampm=$(echo "$ampm" | tr -d ' ')
-    
+
+    hour=$(echo "$time_str" | sed 's/^\([0-9]*\):.*/\1/' | tr -d ' ')
+    minute=$(echo "$time_str" | sed 's/.*:\([0-9]*\).*/\1/' | tr -d ' ')
+    ampm=$(echo "$time_str" | sed 's/.*\([AP]M\).*/\1/' | tr -d ' ')
+
+    # Force base-10 so leading zeros (e.g. "09") don't trigger octal errors in arithmetic
+    hour=$((10#$hour))
+    minute=$((10#$minute))
+
     if [ "$ampm" = "PM" ] && [ "$hour" -ne 12 ]; then
         hour=$((hour + 12))
     elif [ "$ampm" = "AM" ] && [ "$hour" -eq 12 ]; then
         hour=0
     fi
-    
+
     echo "$hour $minute"
 }
 
-# --- PARSE UPDATE TIME (backup time + delay) ---
-parse_update_time() {
-    parsed=$(parse_backup_time)
-    target_hour=$(echo "$parsed" | cut -d' ' -f1)
-    target_minute=$(echo "$parsed" | cut -d' ' -f2)
-    
-    target_minute=$((target_minute + UPDATE_DELAY))
-    if [ "$target_minute" -ge 60 ]; then
-        target_hour=$((target_hour + 1))
-        target_minute=$((target_minute - 60))
+# --- CHECK IF SERVER IS IDLE (no players + 360s since last activity) ---
+# Returns 0 (true) if idle, 1 (false) if not
+is_idle() {
+    local now last_activity idle player_count
+    now=$(date +%s)
+    last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+    idle=$((now - last_activity))
+    player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+
+    if [ "$player_count" -eq 0 ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
+        return 0
     fi
-    
-    if [ "$target_hour" -ge 24 ]; then
-        target_hour=$((target_hour - 24))
-    fi
-    
-    echo "$target_hour $target_minute"
+    return 1
 }
 
-# --- WAIT FOR IDLE STATE ---
+# --- WAIT UNTIL IDLE (blocking, checks every 60s, logs reason) ---
 wait_for_idle() {
+    local label="${1:-Operation}"
     while true; do
+        local now last_activity idle player_count
         now=$(date +%s)
         last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
         idle=$((now - last_activity))
         player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
-        
-        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
-            log "Server idle for ${IDLE_WAIT}s with no players."
+
+        if [ "$player_count" -eq 0 ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
+            log "$label: Server is idle. Proceeding."
             return 0
         fi
-        
+
         if [ "$player_count" -gt 0 ]; then
-            log "Player(s) online, waiting for idle... (check again in ${IDLE_WAIT}s)"
+            log "$label: $player_count player(s) online — waiting for them to leave before proceeding..."
         else
-            log "Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
+            log "$label: Waiting for idle timeout... (${idle}s / ${IDLE_WAIT}s elapsed)"
         fi
-        sleep "$IDLE_WAIT"
+        sleep 60
     done
 }
 
 # --- RUN DAILY BACKUP ---
 run_daily_backup() {
     log "=== Scheduled daily backup time reached ==="
-    send_discord "📦 Scheduled daily backup starting..."
-    
-    log "⏳ Waiting for idle state before backup..."
-    wait_for_idle
-    
+    send_discord "📦 Scheduled daily backup starting — waiting for server idle..."
+
+    wait_for_idle "Daily Backup"
+
     log "=== Stopping server for daily backup ==="
     stop_server
-    
+
     log "=== Backing up SaveGames ==="
     backup_saves
     cleanup_backups
-    
-    log "=== Starting server after daily backup ==="
-    start_server
-    echo "1" > "$SERVER_RESTART_FILE"
-    send_discord "✅ Daily backup completed, server restarted."
+
+    send_discord "✅ Daily backup completed — container will restart server."
 }
 
 # --- RUN UPDATE ---
@@ -182,11 +172,10 @@ run_update() {
 
     if [ "$LOCAL_BUILD" != "$REMOTE_BUILD" ]; then
         log "Update available — running SteamCMD"
-        send_discord "🛠️ Dragonwilds server update detected. Updating now..."
-        
-        log "⏳ Waiting for idle state before update..."
-        wait_for_idle
-        
+        send_discord "🛠️ Dragonwilds server update detected — waiting for idle before updating..."
+
+        wait_for_idle "Update"
+
         stop_server
 
         for i in {1..5}; do
@@ -211,242 +200,166 @@ run_update() {
             log "=== Post-update backup skipped (BACKUP_AFTER_UPDATE=false) ==="
         fi
 
-        start_server
-        send_discord "✅ Dragonwilds server updated and restarted."
+        send_discord "✅ Dragonwilds server updated — container will restart server."
     else
         log "Server is up to date — no update needed"
     fi
 }
 
 # --- MONITOR PLAYERS ---
+# Runs in a subshell (background). Uses temp files for shared state since
+# associative arrays cannot cross subshell boundaries.
 monitor_players() {
-    LOG="$SERVERDIR/RSDragonwilds/Saved/Logs/RSDragonwilds.log"
+    local LOG="$SERVERDIR/RSDragonwilds/Saved/Logs/RSDragonwilds.log"
+    local PLAYERS_FILE="$SERVERDIR/.online_players"
 
     log "Waiting for server log file..."
     while [ ! -f "$LOG" ] || [ ! -s "$LOG" ]; do
         sleep 1
     done
-
     sleep 2
 
+    local LAST_READ
     if [ -f "$SERVER_RESTART_FILE" ]; then
         rm -f "$SERVER_RESTART_FILE"
-        log "Server restarted, resetting log position to read fresh..."
+        log "Server restarted — resetting log position to 0"
         LAST_READ=0
     else
         LAST_READ=$(wc -l < "$LOG")
     fi
 
-    declare -A ONLINE_PLAYERS
+    > "$PLAYERS_FILE"
     echo "0" > "$PLAYER_COUNT_FILE"
+
     if [ -f "$LAST_ACTIVITY_FILE" ]; then
-        last_activity=$(cat "$LAST_ACTIVITY_FILE")
+        : # keep existing timestamp
     else
-        last_activity=$(date +%s)
-        echo "$last_activity" > "$LAST_ACTIVITY_FILE"
+        date +%s > "$LAST_ACTIVITY_FILE"
     fi
+
+    local log_inode
     log_inode=$(stat -c %i "$LOG")
-    log "Player monitor started. Watching for new log lines from line $LAST_READ (inode: $log_inode)"
+    log "Player monitor started at line $LAST_READ (inode: $log_inode)"
 
     while true; do
+        local current_inode
         current_inode=$(stat -c %i "$LOG" 2>/dev/null || echo "$log_inode")
+
         if [ "$current_inode" != "$log_inode" ]; then
-            log "Log file recreated (server restarted), resetting read position from $LAST_READ to 0..."
+            log "Log file recreated (server restarted) — resetting monitor"
             LAST_READ=0
             log_inode=$current_inode
-            last_activity=$(date +%s)
-            echo "$last_activity" > "$LAST_ACTIVITY_FILE"
-            declare -A ONLINE_PLAYERS
-            log "Player monitor reset. Watching for new log lines from line 0 (inode: $log_inode)"
+            date +%s > "$LAST_ACTIVITY_FILE"
+            > "$PLAYERS_FILE"
+            echo "0" > "$PLAYER_COUNT_FILE"
         fi
 
+        local TOTAL_LINES NEW_LINES
         TOTAL_LINES=$(wc -l < "$LOG")
         NEW_LINES=$((TOTAL_LINES - LAST_READ))
+
         if [ "$NEW_LINES" -gt 0 ]; then
-            tail -n "$NEW_LINES" "$LOG" | while read -r line; do
+            local line player
+            while IFS= read -r line; do
                 if [[ "$line" == *"LogNet: Join succeeded:"* ]]; then
                     player=$(echo "$line" | grep -oE 'LogNet: Join succeeded: ([^[:space:]]+)' | sed 's/.*LogNet: Join succeeded: //')
-                    [ -n "$player" ] && ONLINE_PLAYERS["$player"]=1
-                    log "Player connected: $player"
-                    send_discord "🟢 Player connected: $player"
-                    last_activity=$(date +%s)
-                    echo "$last_activity" > "$LAST_ACTIVITY_FILE"
-                    echo "${#ONLINE_PLAYERS[@]}" > "$PLAYER_COUNT_FILE"
+                    if [ -n "$player" ]; then
+                        grep -qxF "$player" "$PLAYERS_FILE" 2>/dev/null || echo "$player" >> "$PLAYERS_FILE"
+                        local count
+                        count=$(wc -l < "$PLAYERS_FILE")
+                        echo "$count" > "$PLAYER_COUNT_FILE"
+                        date +%s > "$LAST_ACTIVITY_FILE"
+                        log "Player connected: $player (online: $count)"
+                        send_discord "🟢 Player connected: $player"
+                    fi
                 fi
 
                 if [[ "$line" == *"LogDominionPlayerController: ClientRequestDisconnect"* ]]; then
                     player=$(echo "$line" | grep -oE 'Character Name\[[^]]+\]' | sed 's/Character Name\[//;s/\]//')
                     if [ -n "$player" ]; then
-                        unset ONLINE_PLAYERS["$player"]
-                        log "Player disconnected: $player"
+                        sed -i "/^${player}$/d" "$PLAYERS_FILE"
+                        local count
+                        count=$(wc -l < "$PLAYERS_FILE")
+                        echo "$count" > "$PLAYER_COUNT_FILE"
+                        date +%s > "$LAST_ACTIVITY_FILE"
+                        log "Player disconnected: $player (online: $count)"
                         send_discord "🔴 Player disconnected: $player"
-                        last_activity=$(date +%s)
-                        echo "$last_activity" > "$LAST_ACTIVITY_FILE"
-                        echo "${#ONLINE_PLAYERS[@]}" > "$PLAYER_COUNT_FILE"
                     fi
                 fi
-            done
+            done < <(tail -n "$NEW_LINES" "$LOG")
             LAST_READ=$TOTAL_LINES
         fi
+
         sleep "$PLAYER_CHECK_INTERVAL"
     done &
 }
 
-# --- MAIN LOOP ---
+# --- MAIN ---
 log "=== Starting Dragonwilds Server ==="
-log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
+log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
 
 start_server
 monitor_players
 
-if [ "$BACKUP_DAILY" = "true" ]; then
-    log "Daily backup scheduled at $BACKUP_TIME"
+# =============================================================================
+# UPDATE LOOP — separate subprocess
+# Checks for updates every UPDATE_TIME seconds (no once-per-day cap).
+# =============================================================================
+if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
+    log "Auto-update enabled — checking every ${UPDATE_TIME}s"
+    (
+        while true; do
+            sleep "$UPDATE_TIME"
+            log "=== Running scheduled update check ==="
+            run_update
+        done
+    ) &
+    UPDATE_LOOP_PID=$!
 fi
 
-if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
-    while true; do
-        today=$(date +%Y-%m-%d)
-        
-        if [ "$today" != "$last_backup_date" ]; then
-            backup_missed=false
-        fi
-        
-        current_hour=$(date +%-H)
-        current_minute=$(date +%-M)
-        
-        backup_parsed=$(parse_backup_time)
-        backup_hour=$(echo "$backup_parsed" | cut -d' ' -f1)
-        backup_minute=$(echo "$backup_parsed" | cut -d' ' -f2)
-        
-        update_parsed=$(parse_update_time)
-        update_hour=$(echo "$update_parsed" | cut -d' ' -f1)
-        update_minute=$(echo "$update_parsed" | cut -d' ' -f2)
-        
-        in_backup_window=false
-        if [ "$current_hour" -eq "$backup_hour" ] && [ "$current_minute" -eq "$backup_minute" ]; then
-            in_backup_window=true
-            backup_window_date="$today"
-        elif [ "$backup_window_date" = "$today" ]; then
-            in_backup_window=true
-        fi
-        
-        in_update_window=false
-        if [ "$current_hour" -eq "$update_hour" ] && [ "$current_minute" -eq "$update_minute" ]; then
-            in_update_window=true
-            update_window_date="$today"
-        elif [ "$update_window_date" = "$today" ]; then
-            in_update_window=true
-        fi
-        
-        if [ "$BACKUP_DAILY" = "true" ] && ( [ "$in_backup_window" = "true" ] || [ "$backup_missed" = "true" ] ); then
-            if [ "$today" != "$last_backup_date" ]; then
-                now=$(date +%s)
-                last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
-                idle=$((now - last_activity))
-                player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
-                
-                if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
-                    run_daily_backup
-                    last_backup_date=$(date +%Y-%m-%d)
-                    backup_window_date=""
-                    backup_missed=false
-                else
-                    if [ "$player_count" -gt 0 ]; then
-                        log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
-                    else
-                        log "Backup: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
-                    fi
-                fi
-            fi
-        fi
-        
-        if [ "$in_backup_window" = "false" ] && [ "$backup_window_date" = "$today" ] && [ "$today" != "$last_backup_date" ]; then
-            backup_missed=true
-            backup_window_date=""
-        fi
-        
-        if [ "$in_update_window" = "true" ]; then
-            now=$(date +%s)
-            last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
-            idle=$((now - last_activity))
-            player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
-            
-            if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
-                log "=== Running scheduled update check ==="
-                run_update
-            else
-                if [ "$player_count" -gt 0 ]; then
-                    log "Update: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
-                else
-                    log "Update: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
-                fi
-            fi
-        fi
-        
-        log "Next check in ${UPDATE_TIME} seconds..."
-        sleep "$UPDATE_TIME"
-    done
-else
-    if [ "$BACKUP_DAILY" = "true" ]; then
+# =============================================================================
+# BACKUP LOOP — separate subprocess
+# Polls every POLL_INTERVAL seconds and fires once per day at BACKUP_TIME.
+# =============================================================================
+if [ "$BACKUP_DAILY" = "true" ]; then
+    log "Daily backup scheduled at $BACKUP_TIME (idle required: ${IDLE_WAIT}s)"
+    (
         while true; do
             today=$(date +%Y-%m-%d)
-            
+            last_backup_date=$(cat "$LAST_BACKUP_DATE_FILE" 2>/dev/null || echo "")
+
             if [ "$today" != "$last_backup_date" ]; then
-                backup_missed=false
-            fi
-            
-            while true; do
-                parsed=$(parse_backup_time)
-                target_hour=$(echo "$parsed" | cut -d' ' -f1)
-                target_minute=$(echo "$parsed" | cut -d' ' -f2)
                 current_hour=$(date +%-H)
                 current_minute=$(date +%-M)
-                
-                today=$(date +%Y-%m-%d)
-                
-                in_backup_window=false
-                if [ "$current_hour" -eq "$target_hour" ] && [ "$current_minute" -eq "$target_minute" ]; then
-                    in_backup_window=true
-                    backup_window_date="$today"
-                elif [ "$backup_window_date" = "$today" ]; then
-                    in_backup_window=true
-                fi
-                
-                if [ "$in_backup_window" = "true" ] || [ "$backup_missed" = "true" ]; then
-                    if [ "$today" != "$last_backup_date" ]; then
-                        now=$(date +%s)
-                        last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
-                        idle=$((now - last_activity))
+                current_total=$((current_hour * 60 + current_minute))
+
+                backup_parsed=$(parse_schedule_time "$BACKUP_TIME")
+                backup_hour=$(echo "$backup_parsed" | cut -d' ' -f1)
+                backup_minute=$(echo "$backup_parsed" | cut -d' ' -f2)
+                backup_total=$((backup_hour * 60 + backup_minute))
+
+                if [ "$current_total" -ge "$backup_total" ]; then
+                    if is_idle; then
+                        run_daily_backup
+                        echo "$today" > "$LAST_BACKUP_DATE_FILE"
+                    else
                         player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
-                        
-                        if [ "$idle" -ge "$IDLE_WAIT" ] && [ "$player_count" -eq 0 ]; then
-                            run_daily_backup
-                            last_backup_date=$(date +%Y-%m-%d)
-                            backup_window_date=""
-                            backup_missed=false
+                        if [ "$player_count" -gt 0 ]; then
+                            log "Backup: $player_count player(s) online — retrying in ${POLL_INTERVAL}s..."
                         else
-                            if [ "$player_count" -gt 0 ]; then
-                                log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
-                            else
-                                log "Backup: Waiting for idle time... (${idle}s of ${IDLE_WAIT}s)"
-                            fi
+                            now=$(date +%s)
+                            last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+                            idle=$((now - last_activity))
+                            log "Backup: Waiting for idle timeout (${idle}s / ${IDLE_WAIT}s) — retrying in ${POLL_INTERVAL}s..."
                         fi
                     fi
                 fi
-                
-                if [ "$in_backup_window" = "false" ] && [ "$backup_window_date" = "$today" ] && [ "$today" != "$last_backup_date" ]; then
-                    backup_missed=true
-                    backup_window_date=""
-                fi
-                
-                sleep 5
-            done
-            
-            log "Next backup check in ${UPDATE_TIME} seconds..."
-            sleep "$UPDATE_TIME"
+            fi
+
+            sleep "$POLL_INTERVAL"
         done
-    else
-        log "Auto-update and daily backup disabled. Server running only."
-        wait "$SERVER_PID"
-    fi
+    ) &
+    BACKUP_LOOP_PID=$!
 fi
+
+wait "$SERVER_PID"

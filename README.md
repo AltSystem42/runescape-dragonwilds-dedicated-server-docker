@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/github/license/AltSystem42/dragonwilds-dedicated-server-docker)
 ![Docker Build](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/actions/workflows/docker-build.yml/badge.svg)
 
-A production-ready Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
+A Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
 
 This image installs and runs the official RuneScape: Dragonwilds Dedicated Server (Steam App ID 4019830) using SteamCMD, and keeps it updated automatically.
 
@@ -46,7 +46,7 @@ The following features are implemented in `scripts/entrypoint-wrapper.sh`:
 - **Player monitoring** — [Lines 221-292](scripts/entrypoint-wrapper.sh#L221) — Watches server log for connections
 - **Discord notifications** — [Lines 43-48](scripts/entrypoint-wrapper.sh#L43) — Sends webhook alerts
 
-## Version v0.2.8
+## Version v0.3.0
 
 This release includes:
 - Core server automation via SteamCMD
