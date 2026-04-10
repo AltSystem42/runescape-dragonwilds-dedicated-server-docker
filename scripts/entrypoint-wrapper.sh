@@ -23,6 +23,7 @@ UPDATE_DELAY=10
 if [ "$BACKUP_DAILY" = "true" ]; then
     last_backup_date=""
     backup_window_date=""
+    backup_missed=false
 fi
 if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
     update_window_date=""
@@ -305,6 +306,11 @@ fi
 if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
     while true; do
         today=$(date +%Y-%m-%d)
+        
+        if [ "$today" != "$last_backup_date" ]; then
+            backup_missed=false
+        fi
+        
         current_hour=$(date +%-H)
         current_minute=$(date +%-M)
         
@@ -332,7 +338,7 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
             in_update_window=true
         fi
         
-        if [ "$BACKUP_DAILY" = "true" ] && [ "$in_backup_window" = "true" ]; then
+        if [ "$BACKUP_DAILY" = "true" ] && ( [ "$in_backup_window" = "true" ] || [ "$backup_missed" = "true" ] ); then
             if [ "$today" != "$last_backup_date" ]; then
                 now=$(date +%s)
                 last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
@@ -343,6 +349,7 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
                     run_daily_backup
                     last_backup_date=$(date +%Y-%m-%d)
                     backup_window_date=""
+                    backup_missed=false
                 else
                     if [ "$player_count" -gt 0 ]; then
                         log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
@@ -351,6 +358,11 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
                     fi
                 fi
             fi
+        fi
+        
+        if [ "$in_backup_window" = "false" ] && [ "$backup_window_date" = "$today" ] && [ "$today" != "$last_backup_date" ]; then
+            backup_missed=true
+            backup_window_date=""
         fi
         
         if [ "$in_update_window" = "true" ]; then
@@ -377,6 +389,12 @@ if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
 else
     if [ "$BACKUP_DAILY" = "true" ]; then
         while true; do
+            today=$(date +%Y-%m-%d)
+            
+            if [ "$today" != "$last_backup_date" ]; then
+                backup_missed=false
+            fi
+            
             while true; do
                 parsed=$(parse_backup_time)
                 target_hour=$(echo "$parsed" | cut -d' ' -f1)
@@ -394,7 +412,7 @@ else
                     in_backup_window=true
                 fi
                 
-                if [ "$in_backup_window" = "true" ]; then
+                if [ "$in_backup_window" = "true" ] || [ "$backup_missed" = "true" ]; then
                     if [ "$today" != "$last_backup_date" ]; then
                         now=$(date +%s)
                         last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
@@ -405,6 +423,7 @@ else
                             run_daily_backup
                             last_backup_date=$(date +%Y-%m-%d)
                             backup_window_date=""
+                            backup_missed=false
                         else
                             if [ "$player_count" -gt 0 ]; then
                                 log "Backup: Player(s) online, waiting for idle... (elapsed: ${idle}s)"
@@ -413,6 +432,11 @@ else
                             fi
                         fi
                     fi
+                fi
+                
+                if [ "$in_backup_window" = "false" ] && [ "$backup_window_date" = "$today" ] && [ "$today" != "$last_backup_date" ]; then
+                    backup_missed=true
+                    backup_window_date=""
                 fi
                 
                 sleep 5
