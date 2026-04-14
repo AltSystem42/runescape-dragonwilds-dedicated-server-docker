@@ -40,11 +40,11 @@ All backups and updates **skip if players are present** to avoid interrupting ga
 
 The following features are implemented in `scripts/entrypoint-wrapper.sh`:
 
-- **Auto-updates** — [Lines 201-270](scripts/entrypoint-wrapper.sh#L201) — Uses SteamCMD to check and install updates
-- **Daily backups** — [Lines 184-199](scripts/entrypoint-wrapper.sh#L184) — Scheduled backup at configured time
-- **Post-update backups** — [Lines 261-267](scripts/entrypoint-wrapper.sh#L261) — Backs up after each update
-- **Player monitoring** — [Lines 272-358](scripts/entrypoint-wrapper.sh#L272) — Watches server log for connections
-- **Discord notifications** — [Lines 56-62](scripts/entrypoint-wrapper.sh#L56) — Sends webhook alerts
+- **Auto-updates** — [Lines 203-272](scripts/entrypoint-wrapper.sh#L203) — Uses SteamCMD to check and install updates
+- **Daily backups** — [Lines 186-201](scripts/entrypoint-wrapper.sh#L186) — Scheduled backup at configured time
+- **Post-update backups** — [Lines 263-269](scripts/entrypoint-wrapper.sh#L263) — Backs up after each update
+- **Player monitoring** — [Lines 274-360](scripts/entrypoint-wrapper.sh#L274) — Watches server log for connections
+- **Discord notifications** — [Lines 58-64](scripts/entrypoint-wrapper.sh#L58) — Sends webhook alerts
 
 ## Version v0.3.2
 
