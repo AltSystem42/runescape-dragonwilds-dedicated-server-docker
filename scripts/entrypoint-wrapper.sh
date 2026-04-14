@@ -1,6 +1,24 @@
 #!/bin/bash
 set -e
 
+# --- DROP PRIVILEGES ---
+# If running as root, match the ubuntu user's UID/GID to the volume owner
+# so the server process can read/write the mounted directory without the
+# host user needing to chmod or chown anything.
+if [ "$(id -u)" = "0" ]; then
+    VOLUME_UID=$(stat -c '%u' "${SERVERDIR:-/home/ubuntu/Steam}" 2>/dev/null || echo "1000")
+    VOLUME_GID=$(stat -c '%g' "${SERVERDIR:-/home/ubuntu/Steam}" 2>/dev/null || echo "1000")
+    # If the volume is owned by root (e.g. not yet mounted / empty), fall back to 1000
+    if [ "$VOLUME_UID" = "0" ]; then
+        VOLUME_UID=1000
+        VOLUME_GID=1000
+    fi
+    groupmod -g "$VOLUME_GID" ubuntu 2>/dev/null || true
+    usermod  -u "$VOLUME_UID" ubuntu 2>/dev/null || true
+    chown -R ubuntu:ubuntu /home/ubuntu
+    exec gosu ubuntu "$0" "$@"
+fi
+
 # --- ENVIRONMENT VARIABLES ---
 APPID=4019830
 SERVERDIR="${SERVERDIR:-/home/ubuntu/Steam}"
@@ -43,8 +61,31 @@ send_discord() {
     fi
 }
 
+# --- INSTALL / VERIFY SERVER FILES VIA STEAMCMD ---
+install_or_verify_server() {
+    log "=== Installing/verifying server files via SteamCMD ==="
+    send_discord "📥 Installing Dragonwilds Dedicated Server — this may take a while..."
+    for i in {1..5}; do
+        log "SteamCMD attempt $i..."
+        /home/ubuntu/steamcmd/steamcmd.sh \
+            +force_install_dir "$SERVERDIR" \
+            +login anonymous \
+            +app_update $APPID validate \
+            +quit && break
+        log "SteamCMD failed, retrying in 5 seconds..."
+        sleep 5
+    done
+    log "=== SteamCMD install/verify complete ==="
+    send_discord "✅ Dragonwilds Dedicated Server installed."
+}
+
 # --- START SERVER ---
 start_server() {
+    local binary="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
+    if [ ! -f "$binary" ]; then
+        log "ERROR: Server binary not found at $binary — cannot start"
+        return 1
+    fi
     log "=== Starting Dragonwilds Server on port ${SERVER_PORT} ==="
     cd "$SERVERDIR/RSDragonwilds/Binaries/Linux"
     ./RSDragonwildsServer-Linux-Shipping RSDragonwilds -log -Port="${SERVER_PORT}" &
@@ -319,6 +360,13 @@ monitor_players() {
 # --- MAIN ---
 log "=== Starting Dragonwilds Server ==="
 log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
+
+# Install server files if not present (first run or missing binary)
+BINARY="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
+if [ ! -f "$BINARY" ]; then
+    log "Server binary not found — running initial SteamCMD install"
+    install_or_verify_server
+fi
 
 start_server
 monitor_players

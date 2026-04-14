@@ -18,6 +18,7 @@ RUN dpkg --add-architecture i386 && \
         sudo \
         jq \
         tzdata \
+        gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Adjust existing ubuntu user/group
@@ -68,15 +69,12 @@ ENV TZ=UTC
 COPY scripts/entrypoint-wrapper.sh /home/ubuntu/entrypoint-wrapper.sh
 RUN chmod +x /home/ubuntu/entrypoint-wrapper.sh
 
-# Switch to non-root user
-USER ubuntu
+# Configure timezone at build time default; runtime TZ env var is respected
+# by glibc automatically — no symlink needed at runtime
+RUN ln -snf /usr/share/zoneinfo/UTC /etc/localtime && echo UTC > /etc/timezone
+
 WORKDIR /home/ubuntu
 
-# Configure timezone at runtime
-# This ensures TZ from .env works inside the container
-ENTRYPOINT ["/bin/bash", "-c", "\
-if [ -n \"$TZ\" ]; then \
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone; \
-fi; \
-/home/ubuntu/entrypoint-wrapper.sh \
-"]
+# Container starts as root so the entrypoint can fix volume ownership,
+# then drops to the ubuntu user via gosu
+ENTRYPOINT ["/home/ubuntu/entrypoint-wrapper.sh"]
