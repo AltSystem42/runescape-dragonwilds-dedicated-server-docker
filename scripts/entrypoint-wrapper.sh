@@ -11,6 +11,7 @@ LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
 LAST_BACKUP_DATE_FILE="$SERVERDIR/.last_backup_date"
+LAST_APPLIED_BUILD_FILE="$SERVERDIR/.last_applied_build"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 UPDATE_TIME="${UPDATE_TIME:-3600}"              # How often (seconds) to check for updates (e.g. 3600 = every hour)
@@ -170,40 +171,61 @@ run_update() {
         | grep '"buildid"' | head -n1 | sed 's/.*"\([0-9]*\)".*/\1/')
     log "Remote build: $REMOTE_BUILD"
 
-    if [ "$LOCAL_BUILD" != "$REMOTE_BUILD" ]; then
-        log "Update available — running SteamCMD"
-        send_discord "🛠️ Dragonwilds server update detected — waiting for idle before updating..."
-
-        wait_for_idle "Update"
-
-        stop_server
-
-        for i in {1..5}; do
-            log "SteamCMD attempt $i..."
-            /home/ubuntu/steamcmd/steamcmd.sh \
-                +force_install_dir "$SERVERDIR" \
-                +login anonymous \
-                +app_update $APPID validate \
-                +quit && break
-            log "SteamCMD failed, retrying in 5 seconds..."
-            sleep 5
-        done
-
-        log "=== Restoring config ==="
-        [ -f "$BACKUPDIR/DedicatedServer.ini" ] && cp "$BACKUPDIR/DedicatedServer.ini" "$CONFIGFILE"
-
-        if [ "$BACKUP_AFTER_UPDATE" = "true" ]; then
-            log "=== Backing up SaveGames (post-update) ==="
-            backup_saves
-            cleanup_backups
-        else
-            log "=== Post-update backup skipped (BACKUP_AFTER_UPDATE=false) ==="
-        fi
-
-        send_discord "✅ Dragonwilds server updated — container will restart server."
-    else
-        log "Server is up to date — no update needed"
+    if [ -z "$REMOTE_BUILD" ]; then
+        log "Could not determine remote build ID — skipping update check"
+        return
     fi
+
+    LAST_APPLIED_BUILD=$(cat "$LAST_APPLIED_BUILD_FILE" 2>/dev/null || echo "")
+
+    if [ "$LOCAL_BUILD" = "$REMOTE_BUILD" ]; then
+        log "Server is up to date (build $LOCAL_BUILD) — no update needed"
+        return
+    fi
+
+    if [ "$REMOTE_BUILD" = "$LAST_APPLIED_BUILD" ]; then
+        log "Update to build $REMOTE_BUILD was already applied — skipping"
+        return
+    fi
+
+    log "Update available (local: $LOCAL_BUILD → remote: $REMOTE_BUILD) — running SteamCMD"
+    send_discord "🛠️ Dragonwilds server update detected (build $REMOTE_BUILD) — waiting for idle before updating..."
+
+    wait_for_idle "Update"
+
+    stop_server
+
+    UPDATE_SUCCEEDED=false
+    for i in {1..5}; do
+        log "SteamCMD attempt $i..."
+        /home/ubuntu/steamcmd/steamcmd.sh \
+            +force_install_dir "$SERVERDIR" \
+            +login anonymous \
+            +app_update $APPID validate \
+            +quit && UPDATE_SUCCEEDED=true && break
+        log "SteamCMD failed, retrying in 5 seconds..."
+        sleep 5
+    done
+
+    log "=== Restoring config ==="
+    [ -f "$BACKUPDIR/DedicatedServer.ini" ] && cp "$BACKUPDIR/DedicatedServer.ini" "$CONFIGFILE"
+
+    if [ "$UPDATE_SUCCEEDED" = "true" ]; then
+        echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
+        log "Recorded applied build: $REMOTE_BUILD"
+    else
+        log "WARNING: SteamCMD failed after 5 attempts — update may be incomplete"
+    fi
+
+    if [ "$BACKUP_AFTER_UPDATE" = "true" ]; then
+        log "=== Backing up SaveGames (post-update) ==="
+        backup_saves
+        cleanup_backups
+    else
+        log "=== Post-update backup skipped (BACKUP_AFTER_UPDATE=false) ==="
+    fi
+
+    send_discord "✅ Dragonwilds server updated to build $REMOTE_BUILD — container will restart server."
 }
 
 # --- MONITOR PLAYERS ---
