@@ -46,7 +46,7 @@ The following features are implemented in `scripts/entrypoint-wrapper.sh`:
 - **Player monitoring** — [Lines 274-360](scripts/entrypoint-wrapper.sh#L274) — Watches server log for connections
 - **Discord notifications** — [Lines 58-64](scripts/entrypoint-wrapper.sh#L58) — Sends webhook alerts
 
-## Version v0.3.2
+## Version v0.3.3
 
 This release includes:
 - Core server automation via SteamCMD
