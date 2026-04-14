@@ -236,6 +236,15 @@ run_update() {
 
     wait_for_idle "Update"
 
+    # Write the marker BEFORE stopping the server.  When stop_server kills
+    # SERVER_PID the main script's `wait $SERVER_PID` unblocks and exits
+    # (set -e + non-zero exit code), which causes Docker to restart the
+    # container and send SIGTERM to this background subshell — killing it
+    # before steamcmd finishes and before we can write the file.  Writing
+    # here ensures the file lands on the volume even if we are killed mid-update.
+    echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
+    log "Recorded pending update: $REMOTE_BUILD"
+
     stop_server
 
     UPDATE_SUCCEEDED=false
@@ -254,10 +263,11 @@ run_update() {
     [ -f "$BACKUPDIR/DedicatedServer.ini" ] && cp "$BACKUPDIR/DedicatedServer.ini" "$CONFIGFILE"
 
     if [ "$UPDATE_SUCCEEDED" = "true" ]; then
-        echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
-        log "Recorded applied build: $REMOTE_BUILD"
+        log "Update to build $REMOTE_BUILD applied successfully"
     else
         log "WARNING: SteamCMD failed after 5 attempts — update may be incomplete"
+        rm -f "$LAST_APPLIED_BUILD_FILE"
+        log "Removed applied-build marker so the update will be retried next check"
     fi
 
     if [ "$BACKUP_AFTER_UPDATE" = "true" ]; then
