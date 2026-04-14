@@ -15,7 +15,9 @@ if [ "$(id -u)" = "0" ]; then
     fi
     groupmod -g "$VOLUME_GID" ubuntu 2>/dev/null || true
     usermod  -u "$VOLUME_UID" ubuntu 2>/dev/null || true
-    chown -R ubuntu:ubuntu /home/ubuntu
+    # Only chown internal dirs — do NOT recurse into the bind-mounted volume
+    chown ubuntu:ubuntu /home/ubuntu
+    chown -R ubuntu:ubuntu /home/ubuntu/steamcmd
     exec gosu ubuntu "$0" "$@"
 fi
 
