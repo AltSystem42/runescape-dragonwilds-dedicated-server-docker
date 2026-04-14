@@ -32,6 +32,8 @@ PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
 LAST_BACKUP_DATE_FILE="$SERVERDIR/.last_backup_date"
 LAST_APPLIED_BUILD_FILE="$SERVERDIR/.last_applied_build"
+UPDATE_IN_PROGRESS_FILE="$SERVERDIR/.update_in_progress"
+BACKUP_IN_PROGRESS_FILE="$SERVERDIR/.backup_in_progress"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 UPDATE_TIME="${UPDATE_TIME:-3600}"              # How often (seconds) to check for updates (e.g. 3600 = every hour)
@@ -191,13 +193,17 @@ run_daily_backup() {
     wait_for_idle "Daily Backup"
 
     log "=== Stopping server for daily backup ==="
+    touch "$BACKUP_IN_PROGRESS_FILE"
     stop_server
 
     log "=== Backing up SaveGames ==="
     backup_saves
     cleanup_backups
 
-    send_discord "✅ Daily backup completed — container will restart server."
+    send_discord "✅ Daily backup completed — restarting server."
+
+    # Release the main loop to restart the server
+    rm -f "$BACKUP_IN_PROGRESS_FILE"
 }
 
 # --- RUN UPDATE ---
@@ -226,7 +232,7 @@ run_update() {
         return
     fi
 
-    if [ "$REMOTE_BUILD" = "$LAST_APPLIED_BUILD" ]; then
+    if [ "$REMOTE_BUILD" = "$LAST_APPLIED_BUILD" ] && [ "$LOCAL_BUILD" = "$LAST_APPLIED_BUILD" ]; then
         log "Update to build $REMOTE_BUILD was already applied — skipping"
         return
     fi
@@ -236,14 +242,10 @@ run_update() {
 
     wait_for_idle "Update"
 
-    # Write the marker BEFORE stopping the server.  When stop_server kills
-    # SERVER_PID the main script's `wait $SERVER_PID` unblocks and exits
-    # (set -e + non-zero exit code), which causes Docker to restart the
-    # container and send SIGTERM to this background subshell — killing it
-    # before steamcmd finishes and before we can write the file.  Writing
-    # here ensures the file lands on the volume even if we are killed mid-update.
-    echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
-    log "Recorded pending update: $REMOTE_BUILD"
+    # Signal the main loop that the server is being stopped intentionally so it
+    # waits for us to finish rather than exiting the container (which would
+    # SIGKILL this subshell before steamcmd completes and we can write files).
+    touch "$UPDATE_IN_PROGRESS_FILE"
 
     stop_server
 
@@ -263,11 +265,10 @@ run_update() {
     [ -f "$BACKUPDIR/DedicatedServer.ini" ] && cp "$BACKUPDIR/DedicatedServer.ini" "$CONFIGFILE"
 
     if [ "$UPDATE_SUCCEEDED" = "true" ]; then
-        log "Update to build $REMOTE_BUILD applied successfully"
+        echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
+        log "Recorded applied build: $REMOTE_BUILD"
     else
         log "WARNING: SteamCMD failed after 5 attempts — update may be incomplete"
-        rm -f "$LAST_APPLIED_BUILD_FILE"
-        log "Removed applied-build marker so the update will be retried next check"
     fi
 
     if [ "$BACKUP_AFTER_UPDATE" = "true" ]; then
@@ -278,7 +279,10 @@ run_update() {
         log "=== Post-update backup skipped (BACKUP_AFTER_UPDATE=false) ==="
     fi
 
-    send_discord "✅ Dragonwilds server updated to build $REMOTE_BUILD — container will restart server."
+    send_discord "✅ Dragonwilds server updated to build $REMOTE_BUILD — restarting server."
+
+    # Release the main loop to restart the server
+    rm -f "$UPDATE_IN_PROGRESS_FILE"
 }
 
 # --- MONITOR PLAYERS ---
@@ -373,6 +377,9 @@ monitor_players() {
 log "=== Starting Dragonwilds Server ==="
 log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
 
+# Remove any stale maintenance flags left by a previously killed container
+rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE"
+
 # Install server files if not present (first run or missing binary)
 BINARY="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
 if [ ! -f "$BINARY" ]; then
@@ -444,4 +451,32 @@ if [ "$BACKUP_DAILY" = "true" ]; then
     BACKUP_LOOP_PID=$!
 fi
 
-wait "$SERVER_PID"
+# Keep the container alive.  When the server is stopped intentionally (update
+# or backup), the background subshell sets an in-progress flag before calling
+# stop_server.  We detect that here, wait for the operation to finish, then
+# restart the server — rather than letting the container exit and getting
+# SIGKILL'd mid-steamcmd by the kernel (PID 1 death kills the whole namespace).
+while true; do
+    wait "$SERVER_PID" || true
+
+    if [ -f "$UPDATE_IN_PROGRESS_FILE" ] || [ -f "$BACKUP_IN_PROGRESS_FILE" ]; then
+        log "Server stopped for scheduled maintenance — waiting for completion..."
+        MAINTENANCE_WAIT=0
+        while [ -f "$UPDATE_IN_PROGRESS_FILE" ] || [ -f "$BACKUP_IN_PROGRESS_FILE" ]; do
+            sleep 5
+            MAINTENANCE_WAIT=$((MAINTENANCE_WAIT + 5))
+            if [ "$MAINTENANCE_WAIT" -ge 3600 ]; then
+                log "WARNING: Maintenance appears stuck after 1h — forcing restart"
+                rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE"
+                break
+            fi
+        done
+        log "Maintenance complete — restarting server"
+        touch "$SERVER_RESTART_FILE"
+        start_server
+        # monitor_players inode watch handles the new log automatically
+    else
+        log "Server exited unexpectedly — container stopping"
+        break
+    fi
+done
