@@ -66,6 +66,12 @@ This release includes:
 
 ## Quick Start
 
+### Post-build
+
+After the `server-data` folder has been created (either by `docker compose up` or `docker run`), stop the container and edit the  `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` file, setting `OwnerId` to the value found in the "My Player Id" entry, which is located on the bottom-left of the game's settings menu. This player will be given admin privileges. The server will not function until this value is properly set.
+
+[Official Documentation](https://dragonwilds.runescape.com/news/how-to-dedicated-servers)
+
 ### Docker Run
 
 ```bash
