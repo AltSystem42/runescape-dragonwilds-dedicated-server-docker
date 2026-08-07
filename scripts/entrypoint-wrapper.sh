@@ -47,6 +47,13 @@ BACKUP_DAILY="${BACKUP_DAILY:-true}"
 BACKUP_TIME="${BACKUP_TIME:-3:00 AM}"           # Time-of-day to run daily backup (12-hour format)
 POLL_INTERVAL="${POLL_INTERVAL:-60}"            # How often (seconds) the backup loop checks the schedule
 
+# --- DEDICATEDSERVER.INI CONFIGURATION ---
+ADMIN_PASSWORD="${ADMIN_PASSWORD}"              # Provided
+OWNER_ID="${OWNER_ID}"                          # Required
+SERVER_GUID="${SERVER_GUID}"                    # Provided
+SERVER_NAME="${SERVER_NAME}"                    # Provided
+WORLD_PASSWORD="${WORLD_PASSWORD}"              # Optional
+DEFAULT_WORLD_NAME="${DEFAULT_WORLD_NAME}"      # Provided
 
 HOME=/home/ubuntu
 mkdir -p "$BACKUPDIR" "$SERVERDIR/steamapps" "$(dirname "$LOGFILE")"
