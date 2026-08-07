@@ -90,6 +90,60 @@ install_or_verify_server() {
     send_discord "✅ Dragonwilds Dedicated Server installed."
 }
 
+# -- DEDICATEDSERVER.INI ---
+#
+# Generate the ini file if needed, then provide it with (at least) the OwnerId
+# This avoids an otherwise unnecessary restart during first-time setup that
+# occurs in the standard flow where the server generates its own ini file but
+# lacks the OwnerId.
+#
+# This will also update the ini file each time the container starts, making it
+# a little easier to change server settings via environment
+
+prepare_dedicated_server_ini() {
+    set_key() {
+        local key="$1"
+        local new_value="$2"
+
+        # key present?
+        if [[ -z "$key" ]]; then echo "Error: Key required."; return 1; fi
+
+        # kvp present?
+        if grep -qE "^[[:space:]]*$key=" "$CONFIGFILE"; then
+            # value present?
+            if [[ ! -z "$new_value" ]]; then
+                # replace key
+                sed -i.bak -E "s|^([[:space:]]*$key=).*|\1$new_value|" "$CONFIGFILE"
+            fi
+        else # append key
+            echo "$key=$new_value" >> "$CONFIGFILE"
+        fi
+    }
+
+    create_config_file() {
+        echo "Config file '$CONFIGFILE' not found, creating."
+        mkdir -p "$(dirname "$CONFIGFILE")" && touch "$CONFIGFILE"
+
+        # Add metadata and section header
+        echo ";METADATA=(Diff=true, UseCommands=true)" >> "$CONFIGFILE"
+        echo "[/Script/Dominion.DedicatedServerSettings]" >> "$CONFIGFILE"
+    }
+
+    # Config.presence
+    if [[ ! -f "$CONFIGFILE" ]]; then create_config_file; fi
+
+    set_key "OwnerId"          "${OWNER_ID}"
+    set_key "ServerGuid"       "${SERVER_GUID}"
+    set_key "AdminPassword"    "${ADMIN_PASSWORD:-$(openssl rand -hex 16 | tr 'a-f' 'A-F')}"
+    set_key "ServerName"       "${SERVER_NAME:-Server-$(date +%s)}"
+    set_key "DefaultWorldName" "${DEFAULT_WORLD_NAME:-World-$(date +%s)}"
+    set_key "WorldPassword"    "${WORLD_PASSWORD}"
+
+    # private function cleanup
+    unset -f set_key
+    unset -f create_config_file
+}
+
 # --- START SERVER ---
 start_server() {
     local binary="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
@@ -394,6 +448,7 @@ if [ ! -f "$BINARY" ]; then
     install_or_verify_server
 fi
 
+prepare_dedicated_server_ini
 start_server
 monitor_players
 
