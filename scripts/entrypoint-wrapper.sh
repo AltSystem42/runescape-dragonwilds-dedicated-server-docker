@@ -18,6 +18,7 @@ if [ "$(id -u)" = "0" ]; then
     # Only chown internal dirs — do NOT recurse into the bind-mounted volume
     chown ubuntu:ubuntu /home/ubuntu
     chown -R ubuntu:ubuntu /home/ubuntu/steamcmd
+    chown -R ubuntu:ubuntu /home/ubuntu/Steam
     exec gosu ubuntu "$0" "$@"
 fi
 
