@@ -9,9 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send Discord message
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
+          payload=$(jq -n --arg title "$ISSUE_TITLE" --arg url "$ISSUE_URL" '{content: ("🚨 New issue opened: " + $title + "\n" + $url)}')
           curl -H "Content-Type: application/json" \
-          -d '{
-            "content": "🚨 New issue opened: ${{ github.event.issue.title }}\n${{ github.event.issue.html_url }}"
-          }' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          -d "$payload" \
+          "$DISCORD_WEBHOOK"
