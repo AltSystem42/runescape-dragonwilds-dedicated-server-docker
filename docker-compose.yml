@@ -7,5 +7,5 @@ services:
     env_file:
       - .env
     volumes:
-    - ./server:/home/ubuntu/Steam
+    - ./server-data:/home/ubuntu/Steam
     restart: unless-stopped
