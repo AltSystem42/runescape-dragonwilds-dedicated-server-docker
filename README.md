@@ -19,56 +19,39 @@ The image includes:
 - SteamCMD for server installation and updates
 - Entry point script that orchestrates updates, backups, and monitoring
 
-## Behavior at Startup
+## Prerequisites
 
-When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh`) performs these steps:
+- Docker Engine 20.10+ and (optionally) Docker Compose v2
+- ~10 GB free disk space for the server install, plus room for backups
+- An open UDP port on your host/router for player connections
+- No Steam account or login is required — the server installs via SteamCMD anonymous login
 
-1. **Server Installation/Update** — If no server files exist, SteamCMD downloads the Dragonwilds dedicated server. On subsequent starts, SteamCMD checks for updates.
-2. **Server Launch** — Starts the dedicated server on the configured UDP port
-3. **Player Monitoring** — Continuously watches the server log for player connections/disconnections
-4. **Idle Monitoring** — Tracks the last player activity timestamp to determine when the server is idle
+## How It Works
 
-### Scheduled Tasks (run when server is idle for 6+ minutes)
+When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh`) does the following:
 
-- **Auto-updates** — Checks for SteamCMD updates hourly (configurable)
-- **Daily backups** — At configured time, stops server, backs up SaveGames, restarts
-- **Post-update backups** — After each server update, automatically backs up saves
+1. **Server install/update** — if no server files exist, SteamCMD downloads the Dragonwilds dedicated server; on later starts it checks for updates
+2. **Server launch** — starts the dedicated server on the configured UDP port
+3. **Player monitoring** — continuously watches the server log for player connections/disconnections
+4. **Idle monitoring** — tracks the last player activity to determine when the server is idle
 
-All backups and updates **skip if players are present** to avoid interrupting gameplay.
+Once the server has been idle for 6+ minutes (configurable), it also runs:
 
-## Feature Implementation
+- **Auto-updates** — checks for SteamCMD updates hourly (configurable)
+- **Daily backups** — at a configured time, stops the server, backs up SaveGames, and restarts
+- **Post-update backups** — after every server update
 
-The following features are implemented in `scripts/entrypoint-wrapper.sh`:
+All backups and updates **skip automatically if players are present**, so gameplay is never interrupted.
 
-- **Auto-updates** — [Lines 209-286](scripts/entrypoint-wrapper.sh#L209) — Uses SteamCMD to check and install updates
-- **Daily backups** — [Lines 188-207](scripts/entrypoint-wrapper.sh#L188) — Scheduled backup at configured time
-- **Post-update backups** — [Lines 274-280](scripts/entrypoint-wrapper.sh#L274) — Backs up after each update
-- **Player monitoring** — [Lines 288-374](scripts/entrypoint-wrapper.sh#L288) — Watches server log for connections
-- **Discord notifications** — [Lines 60-66](scripts/entrypoint-wrapper.sh#L60) — Sends webhook alerts
-
-## Version v0.3.5
-
-This release includes:
-- Core server automation via SteamCMD
-- Daily and post-update backup functionality
-- Player connection monitoring
-- Discord webhook notifications (optional)
-- Config preservation across updates
-- Idle-time aware backup/update logic
-
-## Behind the Scenes
-
-- Installs Dragonwilds Dedicated Server via SteamCMD (AppID 4019830)
-- Runs the server on container startup
-- Monitors player connections via server log parsing
-- Performs backups before shutdown when no players are present
-- Sends Discord alerts via webhook when configured
+Discord webhook alerts can optionally be sent for these events — see `scripts/entrypoint-wrapper.sh` for the implementation details.
 
 ## Quick Start
 
-### Post-build
+### Post-build setup (required)
 
-After the `server-data` folder has been created (either by `docker compose up` or `docker run`), stop the container and edit the  `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` file, setting `OwnerId` to the value found in the "My Player Id" entry, which is located on the bottom-left of the game's settings menu. This player will be given admin privileges. The server will not function until this value is properly set.
+After the `server-data` folder has been created (via `docker compose up` or `docker run`), stop the container and edit `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`, setting `OwnerId` to the value found under "My Player Id" in the game's settings menu. This grants that player admin privileges.
+
+> ⚠️ **The server will not function until `OwnerId` is set.** This is the single most common setup mistake — don't skip it.
 
 [Official Documentation](https://dragonwilds.runescape.com/news/how-to-dedicated-servers)
 
@@ -98,9 +81,9 @@ services:
       - SERVER_PORT=7777
       - TZ=America/New_York
       - ENABLE_DISCORD_NOTIF=false
-      - DISCORD_WEBHOOK_URL=""
+      - DISCORD_WEBHOOK_URL=
       - BACKUP_DAILY=true
-      - BACKUP_TIME="3:00 AM"
+      - BACKUP_TIME=3:00 AM
       - BACKUP_AFTER_UPDATE=true
       - BACKUP_RETENTION_DAYS=30
       - POLL_INTERVAL=60
@@ -112,17 +95,17 @@ services:
     restart: unless-stopped
 ```
 
-### Using .env File
+### Using a .env File
 
-Create a `.env` file:
+Create a `.env` file (no quotes needed around values):
 
 ```env
 SERVER_PORT=7777
 ENABLE_DISCORD_NOTIF=true
-DISCORD_WEBHOOK_URL=""
+DISCORD_WEBHOOK_URL=
 TZ=America/New_York
 BACKUP_DAILY=true
-BACKUP_TIME="3:00 AM"
+BACKUP_TIME=3:00 AM
 BACKUP_AFTER_UPDATE=true
 BACKUP_RETENTION_DAYS=30
 POLL_INTERVAL=60
@@ -131,7 +114,7 @@ UPDATE_TIME=3600
 IDLE_WAIT=360
 ```
 
-Then update docker-compose.yml to use `env_file`:
+Then reference it from `docker-compose.yml`:
 
 ```yaml
 services:
@@ -172,7 +155,6 @@ services:
 
 ## Accessing Server Files
 
-The server files are stored in the mounted volume at:
 - **Saves**: `/home/ubuntu/Steam/RSDragonwilds/Saved/SaveGames`
 - **Config**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
 - **Logs**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Logs/`
@@ -180,12 +162,12 @@ The server files are stored in the mounted volume at:
 
 ## Logs
 
-View container logs:
+Container logs:
 ```bash
 docker logs dragonwilds
 ```
 
-View entrypoint script logs (inside container):
+Entrypoint script logs (inside the container):
 ```bash
 docker exec dragonwilds cat /home/ubuntu/Steam/RSDragonwilds/Saved/Logs/entrypoint.log
 ```
@@ -234,6 +216,28 @@ docker run -d \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
+
+## Troubleshooting
+
+**Container exits immediately after starting**
+Check `docker logs dragonwilds` for a SteamCMD install error — this is usually a disk space or permissions issue on the mounted volume.
+
+**Can't connect to the server**
+Confirm the UDP port is actually forwarded/open on your router or firewall, not just published in Docker — UDP ports are often missed in NAT/firewall rules that only forward TCP.
+
+**Server starts but I have no admin access**
+Double-check `OwnerId` in `DedicatedServer.ini` matches your in-game "My Player Id" exactly, and restart the container after editing it.
+
+**Updates or backups never seem to run**
+They only run once the server has been idle for `IDLE_WAIT` seconds (default 360) — if players are connected, both are skipped by design.
+
+## Contributing
+
+Bug reports and pull requests are welcome — please open an [issue](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/issues) with your container logs if you're reporting a problem.
+
+## Changelog
+
+See [Releases](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/releases) for version history and changes.
 
 ## License
 
