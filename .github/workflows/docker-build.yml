@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - 'v*'   # triggers on version tags like v0.2.2
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,18 +47,20 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # peter-evans/dockerhub-description is currently broken (open issue #331:
-          # Docker Hub returns 403 Forbidden for everyone after they changed auth).
-          # Use Docker Hub's documented access-token flow instead.
+          # Docker Hub does not allow Personal Access Tokens to edit repository
+          # descriptions ("access to the resource is forbidden with personal access
+          # token"). Requires a PAT with read/write/delete scope and Docker Hub's
+          # documented access-token flow (v2/auth/token + Bearer PATCH).
           access_token="$(curl -fsS -X POST https://hub.docker.com/v2/auth/token \
             -H 'Content-Type: application/json' \
             -d "{\"identifier\":\"${DOCKERHUB_USERNAME}\",\"secret\":\"${DOCKERHUB_TOKEN}\"}" \
             | jq -er '.access_token')"
           jq -n --rawfile desc dockerhub.md '{full_description: $desc}' > /tmp/dh-desc.json
-          curl -fsS -X PATCH \
+          http_code="$(curl -sS -o /tmp/dh-resp.json -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer ${access_token}" \
             -H 'Content-Type: application/json' \
             --data-binary @/tmp/dh-desc.json \
-            "https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/dragonwilds-dedicated-server" \
-            >/dev/null
+            "https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/dragonwilds-dedicated-server")"
+          echo "Docker Hub PATCH status: ${http_code}"
+          if [ "${http_code}" != "200" ]; then echo "Docker Hub response:"; cat /tmp/dh-resp.json; exit 22; fi
           echo "Docker Hub description updated"
