@@ -107,19 +107,35 @@ prepare_dedicated_server_ini() {
     set_key() {
         local key="$1"
         local new_value="$2"
+        local escaped
 
-        # key present?
-        if [[ -z "$key" ]]; then echo "Error: Key required."; return 1; fi
+        [ -n "$key" ] || { echo "Error: Key required."; return 1; }
 
-        # kvp present?
         if grep -qE "^[[:space:]]*$key=" "$CONFIGFILE"; then
-            # value present?
-            if [[ ! -z "$new_value" ]]; then
-                # replace key
-                sed -i.bak -E "s|^([[:space:]]*$key=).*|\1$new_value|" "$CONFIGFILE"
+            # Key already present. An empty value means "keep what's there"
+            # (a manual ini edit or a previous env override is preserved).
+            if [ -n "$new_value" ]; then
+                # Escape characters that are special in a sed replacement
+                # (&, | and backslash) so arbitrary values survive intact.
+                escaped=$(printf '%s' "$new_value" | sed -e 's/[\\&|]/\\&/g')
+                sed -i.bak -E "s|^([[:space:]]*$key=).*|\1$escaped|" "$CONFIGFILE"
             fi
-        else # append key
+        elif [ -n "$new_value" ]; then
+            # Key absent — only append when we have a value, so we never
+            # write bare keys like "OwnerId=" with no value.
             echo "$key=$new_value" >> "$CONFIGFILE"
+        fi
+    }
+
+    # Echo a generated default only when the key is missing from the ini
+    # (i.e. a fresh install). When the key exists, echo nothing so set_key
+    # preserves the existing value instead of clobbering it with a new
+    # timestamp/random value on every container restart.
+    default_echo() {
+        if grep -qE "^[[:space:]]*$1=" "$CONFIGFILE"; then
+            echo ""
+        else
+            echo "$2"
         fi
     }
 
@@ -137,13 +153,14 @@ prepare_dedicated_server_ini() {
 
     set_key "OwnerId"          "${OWNER_ID}"
     set_key "ServerGuid"       "${SERVER_GUID}"
-    set_key "AdminPassword"    "${ADMIN_PASSWORD:-$(openssl rand -hex 16 | tr 'a-f' 'A-F')}"
-    set_key "ServerName"       "${SERVER_NAME:-Server-$(date +%s)}"
-    set_key "DefaultWorldName" "${DEFAULT_WORLD_NAME:-World-$(date +%s)}"
+    set_key "AdminPassword"    "${ADMIN_PASSWORD:-$(default_echo AdminPassword "$(openssl rand -hex 16 | tr 'a-f' 'A-F')")}"
+    set_key "ServerName"       "${SERVER_NAME:-$(default_echo ServerName "Server-$(date +%s)")}"
+    set_key "DefaultWorldName" "${DEFAULT_WORLD_NAME:-$(default_echo DefaultWorldName "World-$(date +%s)")}"
     set_key "WorldPassword"    "${WORLD_PASSWORD}"
 
     # private function cleanup
     unset -f set_key
+    unset -f default_echo
     unset -f create_config_file
 }
 
@@ -473,6 +490,10 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 prepare_dedicated_server_ini
+if ! grep -qE "^[[:space:]]*OwnerId=[^[:space:]]+" "$CONFIGFILE"; then
+    log "⚠️  WARNING: OwnerId is not set in DedicatedServer.ini — no player will have admin on this server."
+    log "            Set OWNER_ID in your .env (your in-game \"My Player Id\") and restart the container."
+fi
 start_server
 monitor_players
 

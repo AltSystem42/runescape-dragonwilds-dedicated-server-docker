@@ -47,9 +47,19 @@ Discord webhook alerts can optionally be sent for these events — see `scripts/
 
 ## Quick Start
 
-### Post-build setup (required)
+### Post-build setup: set `OwnerId` (required)
 
-After the `server-data` folder has been created (via `docker compose up` or `docker run`), stop the container and edit `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`, setting `OwnerId` to the value found under "My Player Id" in the game's settings menu. This grants that player admin privileges.
+`OwnerId` grants your player admin privileges on the server. The server will not function (for you) until it is set — this is the single most common setup mistake. Set it **one** of two ways:
+
+**Option A — via `.env` (recommended):** before the first start, add your in-game "My Player Id" (shown in the game's settings menu) to `.env`:
+
+```env
+OWNER_ID=your-in-game-player-id
+```
+
+The container writes it into `DedicatedServer.ini` automatically on start.
+
+**Option B — edit the ini:** after the `server-data` folder has been created (via `docker compose up` or `docker run`), stop the container and edit `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`, setting `OwnerId` to the value found under "My Player Id" in the game's settings menu.
 
 > ⚠️ **The server will not function until `OwnerId` is set.** This is the single most common setup mistake — don't skip it.
 
@@ -80,6 +90,7 @@ services:
     environment:
       - SERVER_PORT=7777
       - TZ=America/New_York
+      - OWNER_ID=  # required — your in-game "My Player Id" (see Post-build setup)
       - ENABLE_DISCORD_NOTIF=false
       - DISCORD_WEBHOOK_URL=
       - BACKUP_DAILY=true
@@ -112,7 +123,18 @@ POLL_INTERVAL=60
 ENABLE_AUTO_UPDATE=true
 UPDATE_TIME=3600
 IDLE_WAIT=360
+
+# Server settings (written to DedicatedServer.ini on container start)
+# OWNER_ID is required — your in-game "My Player Id" (see "Post-build setup")
+OWNER_ID=
+SERVER_NAME=My Dragonwilds Server
+DEFAULT_WORLD_NAME=MyWorld
+ADMIN_PASSWORD=change-me
+WORLD_PASSWORD=
+SERVER_GUID=
 ```
+
+> Leave any server-setting variable empty to keep whatever value already exists in `DedicatedServer.ini` (e.g. a manual ini edit). Set it to force an override on the next container start.
 
 Then reference it from `docker-compose.yml`:
 
@@ -146,6 +168,21 @@ services:
 | `IDLE_WAIT` | 360 | Seconds to wait for no players before update/backup (default: 6 min) |
 | `ENABLE_DISCORD_NOTIF` | false | Enable Discord webhook notifications |
 | `DISCORD_WEBHOOK_URL` | (empty) | Discord webhook URL |
+
+### Server Settings (written to `DedicatedServer.ini`)
+
+These are applied to `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on every container start. Set a variable to override the ini value; leave it empty to keep whatever is already in the ini (the generated defaults below only apply when the key is missing entirely, e.g. a fresh install).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OWNER_ID` | (empty) | **Required.** Your in-game "My Player Id" from the game's settings menu — grants that player admin. The container logs a warning if it is unset. |
+| `SERVER_NAME` | `Server-<timestamp>` | Server name shown in the world browser |
+| `DEFAULT_WORLD_NAME` | `World-<timestamp>` | World name used to find the server in the world browser |
+| `ADMIN_PASSWORD` | random string | Admin password for the server (only generated once if absent) |
+| `WORLD_PASSWORD` | (empty) | Optional password required to join the world |
+| `SERVER_GUID` | (empty) | Leave empty unless you know what you're doing |
+
+> Mapped path note: the container writes to `/home/ubuntu/Steam/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`, which is the same file as `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on your host via the volume mount.
 
 ## Volume Mounts
 
