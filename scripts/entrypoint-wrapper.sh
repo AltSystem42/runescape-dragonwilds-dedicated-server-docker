@@ -31,6 +31,7 @@ LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
 LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
+SERVER_PID_FILE="$SERVERDIR/.server_pid"
 LAST_BACKUP_DATE_FILE="$SERVERDIR/.last_backup_date"
 LAST_APPLIED_BUILD_FILE="$SERVERDIR/.last_applied_build"
 UPDATE_IN_PROGRESS_FILE="$SERVERDIR/.update_in_progress"
@@ -41,6 +42,7 @@ UPDATE_TIME="${UPDATE_TIME:-3600}"              # How often (seconds) to check f
 ENABLE_DISCORD_NOTIF="${ENABLE_DISCORD_NOTIF:-false}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 IDLE_WAIT="${IDLE_WAIT:-360}"
+SERVER_STOP_TIMEOUT="${SERVER_STOP_TIMEOUT:-120}"   # Max seconds to wait for the server to stop before SIGKILL
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
@@ -156,15 +158,36 @@ start_server() {
     cd "$SERVERDIR/RSDragonwilds/Binaries/Linux"
     ./RSDragonwildsServer-Linux-Shipping RSDragonwilds -log -Port="${SERVER_PORT}" &
     SERVER_PID=$!
+    echo "$SERVER_PID" > "$SERVER_PID_FILE"
 }
 
 # --- STOP SERVER ---
+# This may be called from the update/backup subshells, where the inherited
+# $SERVER_PID goes stale after the first maintenance restart and `wait` cannot
+# reap a process that is not a child of the current shell. We therefore track
+# the live PID in a file and poll for actual process exit (escalating to
+# SIGKILL after $SERVER_STOP_TIMEOUT) so callers always wait for the old
+# server to fully die before running SteamCMD or a backup.
 stop_server() {
-    if ps -p "$SERVER_PID" > /dev/null 2>&1; then
-        log "=== Stopping server ==="
-        kill "$SERVER_PID"
-        wait "$SERVER_PID" || true
+    local pid stop_timeout="${SERVER_STOP_TIMEOUT:-120}" waited=0
+    pid=$(cat "$SERVER_PID_FILE" 2>/dev/null || echo "${SERVER_PID:-}")
+    [ -n "$pid" ] || return 0
+    if ! kill -0 "$pid" 2>/dev/null; then
+        return 0
     fi
+
+    log "=== Stopping server (pid $pid) ==="
+    kill "$pid" 2>/dev/null || true
+
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$stop_timeout" ]; then
+            log "Server did not stop within ${stop_timeout}s — sending SIGKILL"
+            kill -9 "$pid" 2>/dev/null || true
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
 }
 
 # --- CLEAN OLD BACKUPS ---
@@ -440,7 +463,7 @@ log "=== Starting Dragonwilds Server ==="
 log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
 
 # Remove any stale maintenance flags left by a previously killed container
-rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE"
+rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE" "$SERVER_PID_FILE"
 
 # Install server files if not present (first run or missing binary)
 BINARY="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
