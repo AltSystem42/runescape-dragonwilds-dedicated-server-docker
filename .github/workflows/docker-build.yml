@@ -42,9 +42,13 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
 
       - name: Update Docker Hub description
+        # Image is already built and pushed at this point; a Docker Hub
+        # metadata-API hiccup must not fail the whole job.
+        continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DH_SHORT_DESCRIPTION: 'RuneScape: Dragonwilds dedicated server with auto-updates, backups, and Discord alerts'
         run: |
           set -euo pipefail
           # Docker Hub does not allow Personal Access Tokens to edit repository
@@ -55,7 +59,8 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{\"identifier\":\"${DOCKERHUB_USERNAME}\",\"secret\":\"${DOCKERHUB_TOKEN}\"}" \
             | jq -er '.access_token')"
-          jq -n --rawfile desc dockerhub.md '{full_description: $desc}' > /tmp/dh-desc.json
+          jq -n --arg short "${DH_SHORT_DESCRIPTION}" --rawfile desc dockerhub.md \
+            '{full_description: $desc, description: $short}' > /tmp/dh-desc.json
           http_code="$(curl -sS -o /tmp/dh-resp.json -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer ${access_token}" \
             -H 'Content-Type: application/json' \

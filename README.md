@@ -1,10 +1,10 @@
 # Dragonwilds Dedicated Server Docker Image
 
 ![Docker Pulls](https://img.shields.io/docker/pulls/andyaltsys/dragonwilds-dedicated-server)
-![GitHub Release](https://img.shields.io/github/v/release/AltSystem42/dragonwilds-dedicated-server-docker)
-![GitHub Issues](https://img.shields.io/github/issues/AltSystem42/dragonwilds-dedicated-server-docker)
-![License](https://img.shields.io/github/license/AltSystem42/dragonwilds-dedicated-server-docker)
-![Docker Build](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/actions/workflows/docker-build.yml/badge.svg)
+![GitHub Release](https://img.shields.io/github/v/release/AltSystem42/runescape-dragonwilds-dedicated-server-docker)
+![GitHub Issues](https://img.shields.io/github/issues/AltSystem42/runescape-dragonwilds-dedicated-server-docker)
+![License](https://img.shields.io/github/license/AltSystem42/runescape-dragonwilds-dedicated-server-docker)
+![Docker Build](https://github.com/AltSystem42/runescape-dragonwilds-dedicated-server-docker/actions/workflows/docker-build.yml/badge.svg)
 
 A Docker container for running a dedicated RuneScape: Dragonwilds game server with automated updates, scheduled backups, player monitoring, and Discord notifications.
 
@@ -282,11 +282,13 @@ They only run once the server has been idle for `IDLE_WAIT` seconds (default 360
 
 ## Contributing
 
-Bug reports and pull requests are welcome — please open an [issue](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/issues) with your container logs if you're reporting a problem.
+Bug reports and pull requests are welcome — please open an [issue](https://github.com/AltSystem42/runescape-dragonwilds-dedicated-server-docker/issues) with your container logs if you're reporting a problem.
+
+The Docker Hub repository description is maintained in [`dockerhub.md`](dockerhub.md) and synced automatically by the build workflow (`docker-build.yml`) on every push or tag.
 
 ## Changelog
 
-See [Releases](https://github.com/AltSystem42/dragonwilds-dedicated-server-docker/releases) for version history and changes.
+See [Releases](https://github.com/AltSystem42/runescape-dragonwilds-dedicated-server-docker/releases) for version history and changes.
 
 ## License
 
