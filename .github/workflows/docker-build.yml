@@ -39,3 +39,12 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: andyaltsys/dragonwilds-dedicated-server
+          short-description: Docker container for running a RuneScape: Dragonwilds dedicated game server
+          readme-filepath: ./dockerhub.md
