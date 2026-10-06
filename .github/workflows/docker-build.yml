@@ -46,5 +46,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: andyaltsys/dragonwilds-dedicated-server
-          short-description: Docker container for running a RuneScape: Dragonwilds dedicated game server
+          short-description: 'Docker container for running a RuneScape: Dragonwilds dedicated game server'
           readme-filepath: ./dockerhub.md
