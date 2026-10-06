@@ -27,7 +27,7 @@ APPID=4019830
 SERVERDIR="${SERVERDIR:-/home/ubuntu/Steam}"
 CONFIGFILE="$SERVERDIR/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini"
 BACKUPDIR="$SERVERDIR/backup"
-LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
+LOGFILE="$SERVERDIR/logs/entrypoint.log"
 LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
 SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
@@ -43,6 +43,9 @@ ENABLE_DISCORD_NOTIF="${ENABLE_DISCORD_NOTIF:-false}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 IDLE_WAIT="${IDLE_WAIT:-360}"
 SERVER_STOP_TIMEOUT="${SERVER_STOP_TIMEOUT:-120}"   # Max seconds to wait for the server to stop before SIGKILL
+LOG_TO_STDOUT="${LOG_TO_STDOUT:-true}"              # Also echo script log lines to the container stdout (docker logs)
+MAX_LOG_SIZE="${MAX_LOG_SIZE:-5242880}"             # Rotate the script log once it reaches this many bytes (default 5 MB)
+LOG_RETENTION="${LOG_RETENTION:-5}"                 # Number of rotated script log generations to keep
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 PLAYER_CHECK_INTERVAL=5
 BACKUP_AFTER_UPDATE="${BACKUP_AFTER_UPDATE:-true}"
@@ -61,10 +64,30 @@ DEFAULT_WORLD_NAME="${DEFAULT_WORLD_NAME}"      # Provided
 HOME=/home/ubuntu
 mkdir -p "$BACKUPDIR" "$SERVERDIR/steamapps" "$(dirname "$LOGFILE")"
 
-[ -f "$LOGFILE" ] && rm -f "$LOGFILE"
+# Migrate an old entrypoint.log that used to live in the game log directory,
+# so existing history isn't lost when the script log moves to logs/.
+OLD_LOGFILE="$SERVERDIR/RSDragonwilds/Saved/Logs/entrypoint.log"
+if [ -f "$OLD_LOGFILE" ] && [ ! -f "$LOGFILE" ]; then
+    mv "$OLD_LOGFILE" "$LOGFILE"
+fi
+
+# Rotate the script log once it grows past MAX_LOG_SIZE instead of deleting
+# it, so history survives container restarts (e.g. after every update).
+# Total footprint is bounded by MAX_LOG_SIZE x LOG_RETENTION.
+if [ "$LOG_RETENTION" -gt 1 ] && [ -s "$LOGFILE" ] && [ "$(stat -c %s "$LOGFILE")" -ge "$MAX_LOG_SIZE" ]; then
+    for n in $(seq $((LOG_RETENTION - 1)) -1 1); do
+        [ -f "$LOGFILE.$n" ] && mv "$LOGFILE.$n" "$LOGFILE.$((n + 1))"
+    done
+    mv "$LOGFILE" "$LOGFILE.1"
+fi
 
 log() {
-    echo "$1" | tee -a "$LOGFILE"
+    # Timestamp prefixed in the log file; plain on stdout so that docker logs
+    # output keeps its current shape.
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOGFILE"
+    if [ "$LOG_TO_STDOUT" = "true" ]; then
+        echo "$1"
+    fi
 }
 
 # --- FUNCTION TO SEND DISCORD NOTIFICATION ---
@@ -476,6 +499,8 @@ monitor_players() {
 }
 
 # --- MAIN ---
+echo "" >> "$LOGFILE"
+echo "===== Container start $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOGFILE"
 log "=== Starting Dragonwilds Server ==="
 log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
 

@@ -168,6 +168,9 @@ services:
 | `IDLE_WAIT` | 360 | Seconds to wait for no players before update/backup (default: 6 min) |
 | `ENABLE_DISCORD_NOTIF` | false | Enable Discord webhook notifications |
 | `DISCORD_WEBHOOK_URL` | (empty) | Discord webhook URL |
+| `LOG_TO_STDOUT` | true | Also echo script log lines to the container stdout (`docker logs`). Set to `false` to keep script messages in the log file only |
+| `MAX_LOG_SIZE` | 5242880 (5 MB) | Rotate the script log once it reaches this many bytes |
+| `LOG_RETENTION` | 5 | Number of rotated script log generations to keep (`MAX_LOG_SIZE` × `LOG_RETENTION` bounds disk usage) |
 
 ### Server Settings (written to `DedicatedServer.ini`)
 
@@ -194,20 +197,29 @@ These are applied to `server-data/RSDragonwilds/Saved/Config/LinuxServer/Dedicat
 
 - **Saves**: `/home/ubuntu/Steam/RSDragonwilds/Saved/SaveGames`
 - **Config**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
-- **Logs**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Logs/`
+- **Game logs**: `/home/ubuntu/Steam/RSDragonwilds/Saved/Logs/`
+- **Script log**: `/home/ubuntu/Steam/logs/entrypoint.log` (on host: `./server-data/logs/entrypoint.log`)
 - **Backups**: `/home/ubuntu/Steam/backup/`
 
 ## Logs
 
-Container logs:
+**Container logs** — mixed, includes both script messages (unless `LOG_TO_STDOUT=false`) and the game server's console output:
 ```bash
 docker logs dragonwilds
 ```
 
-Entrypoint script logs (inside the container):
+**Script log** — dedicated file for the entrypoint script, separate from the game's logs:
+- Inside container: `/home/ubuntu/Steam/logs/entrypoint.log`
+- On host: `./server-data/logs/entrypoint.log`
+
 ```bash
-docker exec dragonwilds cat /home/ubuntu/Steam/RSDragonwilds/Saved/Logs/entrypoint.log
+docker exec dragonwilds tail -f /home/ubuntu/Steam/logs/entrypoint.log
 ```
+
+The script log is appended across container restarts (so update/backup history survives) and rotated by size — disk usage is bounded by `MAX_LOG_SIZE` × `LOG_RETENTION`. Each entry is prefixed with a timestamp `[YYYY-MM-DD HH:MM:SS]`.
+
+**Game server log** — the running server's own output:
+`./server-data/RSDragonwilds/Saved/Logs/RSDragonwilds.log`
 
 ## Examples
 
