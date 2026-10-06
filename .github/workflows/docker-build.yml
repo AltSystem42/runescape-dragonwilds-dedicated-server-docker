@@ -41,10 +41,23 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
 
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: andyaltsys/dragonwilds-dedicated-server
-          short-description: 'Docker container for running a RuneScape: Dragonwilds dedicated game server'
-          readme-filepath: ./dockerhub.md
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # peter-evans/dockerhub-description is currently broken (open issue #331:
+          # Docker Hub returns 403 Forbidden for everyone after they changed auth).
+          # Use Docker Hub's documented access-token flow instead.
+          access_token="$(curl -fsS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\":\"${DOCKERHUB_USERNAME}\",\"secret\":\"${DOCKERHUB_TOKEN}\"}" \
+            | jq -er '.access_token')"
+          jq -n --rawfile desc dockerhub.md '{full_description: $desc}' > /tmp/dh-desc.json
+          curl -fsS -X PATCH \
+            -H "Authorization: Bearer ${access_token}" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/dh-desc.json \
+            "https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/dragonwilds-dedicated-server" \
+            >/dev/null
+          echo "Docker Hub description updated"
