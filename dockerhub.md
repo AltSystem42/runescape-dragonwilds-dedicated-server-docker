@@ -9,15 +9,17 @@ This image uses SteamCMD to download and install the official dedicated server b
 
 ## Features
 
-- **Auto-updates** — Automatically checks for and installs server updates (hourly by default)
-- **Daily backups** — Scheduled backups at a configurable time
+- **Auto-updates** — Checks for new server builds every hour by default (`UPDATE_TIME`) and only runs SteamCMD when the local build differs from Steam's
+- **Idle-aware maintenance** — Updates and backups wait until no player has been online for `IDLE_WAIT` seconds, then stop and restart the game process *inside the same container* — the container never exits mid-update
+- **Daily backups** — Scheduled at a configurable time (`BACKUP_TIME`), catching up if the container was down at that moment, and pruned after `BACKUP_RETENTION_DAYS`
 - **Post-update backups** — Automatic backup after each server update
-- **Player monitoring** — Tracks player connections/disconnections
-- **Discord notifications** — Alerts for updates, backups, and player events
-- **Server settings via env** — Configure owner ID, server name, world, and passwords with environment variables or `.env`
-- **Separate script logs** — Entrypoint logs go to their own persistent, size-rotated log file
-- **Config preservation** — Keeps your server configuration across updates
-- **Idle-aware** — Skips backups/updates when players are present
+- **Player monitoring** — Tails the game log for join/leave events, tracking the online player count and last activity
+- **Discord notifications** — Alerts for installs, updates, backups, and player events
+- **Server settings via env** — Configure owner ID, server name, world name, and passwords with environment variables or `.env`; an empty value keeps whatever is already in `DedicatedServer.ini`
+- **Config preservation** — `DedicatedServer.ini` is backed up before each update and restored afterwards
+- **Bind-mount friendly** — Starts as root, matches its `ubuntu` user to your volume's UID/GID, then drops privileges with `gosu` — no manual `chown` needed
+- **Separate script logs** — Entrypoint logs go to their own persistent, size-rotated log file (`logs/entrypoint.log`)
+- **Crash handling** — If the game process exits unexpectedly, the container exits too, so your `restart:` policy brings it back
 
 ## Quick Start
 
@@ -26,7 +28,7 @@ docker run -d \
   --name dragonwilds \
   -p 7777:7777/udp \
   -e SERVER_PORT=7777 \
-  -e OWNER_ID=YOUR_STEAM_ID64 \
+  -e OWNER_ID=your-in-game-player-id \
   -e SERVER_NAME="My Dragonwilds Server" \
   -e TZ=America/New_York \
   -e BACKUP_DAILY=true \
@@ -39,12 +41,15 @@ docker run -d \
   -e POLL_INTERVAL=60 \
   -e ENABLE_DISCORD_NOTIF=false \
   -v ./server-data:/home/ubuntu/Steam \
+  --restart unless-stopped \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
-Or use the included `docker-compose.yml`.
+Or use the included `docker-compose.yml` — it reads all of its configuration from a `.env` file, so create one first with `cp .env.example .env`.
 
-> **First run:** set `OWNER_ID` to your Steam ID64 — the server won't show up in the server browser until an owner is set.
+> **First run:** set `OWNER_ID` to your in-game Player ID — shown at the bottom of the game's Settings menu (use the copy button). It is mandatory: the official docs say the server will not start without it, and the player it identifies becomes the server's owner.
+
+Server files, saves, config, and backups live under `./server-data` on the host (mounted at `/home/ubuntu/Steam` in the container).
 
 ## Configuration
 

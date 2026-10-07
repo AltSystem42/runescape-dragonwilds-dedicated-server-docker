@@ -30,24 +30,27 @@ The image includes:
 
 When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh`) does the following:
 
-1. **Privilege drop** — if running as root, it matches the container's process UID/GID to the mounted volume's owner, so no manual `chown` on a bind mount is needed
-2. **Server install/verify** — if the server binary is missing, SteamCMD downloads the Dragonwilds dedicated server (retrying up to 5 times); on later starts it verifies the files before launching
+1. **Privilege drop** — if running as root, it matches the `ubuntu` user's UID/GID to the mounted volume's owner, chowns only its own internal directories (never the bind-mounted volume), and re-executes itself as `ubuntu` via `gosu` — so no manual `chown` on the host is needed
+2. **Server install (first run only)** — if the server binary is missing, SteamCMD downloads the Dragonwilds dedicated server (up to 5 attempts, `validate`). Later starts do **not** re-verify files: the update loop below compares the local and remote Steam `buildid` every `UPDATE_TIME` seconds and runs SteamCMD only when they differ
 3. **Config sync** — applies your server settings (`OWNER_ID`, `SERVER_NAME`, `DEFAULT_WORLD_NAME`, `ADMIN_PASSWORD`, `WORLD_PASSWORD`, `SERVER_GUID`) to `DedicatedServer.ini` from environment variables / `.env` (empty values keep whatever is already in the ini)
 4. **Server launch** — starts the dedicated server on the configured UDP port
-5. **Player monitoring** — watches the game log for join/leave events, tracking the online-player count and last activity
+5. **Player monitoring** — tails the game log every 5 seconds for join/leave events, tracking the online-player count and last-activity timestamp in files under the mounted volume (so idle state survives container restarts)
 6. **Update & backup loops** — background loops check for updates (via SteamCMD) and run the daily backup on schedule
+7. **Supervision loop** — the wrapper waits on the game process: if it was stopped for maintenance it restarts it in place; if it crashed or exited on its own, the container exits so your `restart:` policy can bring it back
 
-Updates and backups are **idle-aware**: they wait until no players are online and the server has been idle for `IDLE_WAIT` seconds (default 360 = 6 minutes). During maintenance the wrapper stops the server, runs SteamCMD or the backup, and then **restarts the server in the same container** — so maintenance never exits the container or kills the process mid-update.
+Updates and backups are **idle-aware**: they wait until no players are online and the server has been idle for `IDLE_WAIT` seconds (default 360 = 6 minutes). The update path blocks and logs its reason every 60 seconds; the backup loop retries every `POLL_INTERVAL`. For maintenance the wrapper stops the server, runs SteamCMD or the backup — before an update it copies `DedicatedServer.ini` to `backup/` and restores it afterwards — and then **restarts the server in the same container** — so maintenance never exits the container or kills the process mid-update. If an operation never finishes, the wrapper forces a restart after 1 hour instead of hanging forever.
 
-Discord webhook notifications can optionally be sent for updates, backups, and player join/leave events (`ENABLE_DISCORD_NOTIF` / `DISCORD_WEBHOOK_URL`).
+If the container was down when a daily backup was scheduled, the backup runs on the next start once the scheduled time has passed (and the server is idle).
+
+Discord webhook notifications can optionally be sent for installs, updates, backups, and player join/leave events (`ENABLE_DISCORD_NOTIF` / `DISCORD_WEBHOOK_URL`).
 
 ## Quick Start
 
 ### Post-build setup: set `OwnerId` (required)
 
-`OwnerId` grants your player admin privileges on the server. The server will not function (for you) until it is set — this is the single most common setup mistake. Set it **one** of two ways:
+`OwnerId` identifies your player as the server's owner — the only one who can ban/unban — and the [official docs](https://dragonwilds.runescape.com/news/how-to-dedicated-servers) state the server will not start without it. This is the single most common setup mistake. Set it **one** of two ways:
 
-**Option A — via `.env` (recommended):** add your in-game "My Player Id" (shown in the game's settings menu) to `.env`:
+**Option A — via `.env` (recommended):** add your in-game "My Player Id" (at the bottom of the game's Settings menu — use the copy button) to `.env`:
 
 ```env
 OWNER_ID=your-in-game-player-id
@@ -57,7 +60,7 @@ The container writes it into `DedicatedServer.ini` automatically on every start.
 
 **Option B — edit the ini:** after the `server-data` folder has been created (via `docker compose up` or `docker run`), stop the container and edit `server-data/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`, setting `OwnerId` to the value found under "My Player Id" in the game's settings menu.
 
-> ⚠️ **The server will not function until `OwnerId` is set.** This is the single most common setup mistake — don't skip it.
+> ⚠️ **The server will not start until `OwnerId` is set** (per the official docs). This is the single most common setup mistake — don't skip it.
 
 [Official Documentation](https://dragonwilds.runescape.com/news/how-to-dedicated-servers)
 
@@ -70,12 +73,16 @@ docker run -d \
   -e SERVER_PORT=7777 \
   -e TZ=America/New_York \
   -e BACKUP_TIME="3:00 AM" \
-  -e OWNER_ID= # required — set to your in-game "My Player Id" (see Post-build setup)
+  -e OWNER_ID=your-in-game-player-id \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
 
+> `OWNER_ID` is **required** — it must be your in-game "My Player Id" (see [Post-build setup](#post-build-setup-set-ownerid-required)).
+
 ### Docker Compose
+
+The repo ships a ready-to-use [`docker-compose.yml`](docker-compose.yml):
 
 ```yaml
 services:
@@ -83,36 +90,32 @@ services:
     image: andyaltsys/dragonwilds-dedicated-server:latest
     container_name: dragonwilds
     ports:
-      - "7777:7777/udp"
-    environment:
-      - SERVER_PORT=7777
-      - TZ=America/New_York
-      - OWNER_ID=  # required — your in-game "My Player Id" (see Post-build setup)
-      - ENABLE_DISCORD_NOTIF=false
-      - DISCORD_WEBHOOK_URL=
-      - BACKUP_DAILY=true
-      - BACKUP_TIME=3:00 AM
-      - BACKUP_AFTER_UPDATE=true
-      - BACKUP_RETENTION_DAYS=30
-      - POLL_INTERVAL=60
-      - ENABLE_AUTO_UPDATE=true
-      - UPDATE_TIME=3600
-      - IDLE_WAIT=360
+      - "${SERVER_PORT}:${SERVER_PORT}/udp"
+    env_file:
+      - .env
     volumes:
-      - ./server-data:/home/ubuntu/Steam
+    - ./server-data:/home/ubuntu/Steam
     restart: unless-stopped
 ```
 
-> `restart: unless-stopped` will bring the container (and server) back after a host reboot. On a normal update/backup the container stays up — only the game process restarts.
+It reads **all** of its configuration from `.env` — including `SERVER_PORT`, which is used for the port mapping — so make sure `.env` exists first (create it with `cp .env.example .env` and set `OWNER_ID`; full details below), then start:
+
+```bash
+docker compose up -d
+```
+
+> `restart: unless-stopped` will bring the container (and server) back after a host reboot. On a normal update/backup the container stays up — only the game process restarts. If the game process exits on its own, the container exits too, and this policy restarts it.
 
 ### Using a .env File
 
-Start from the template — copy `.env.example` to `.env` and fill in your values.
+Start from the template — copy `.env.example` to `.env` and fill in your values:
 
 ```bash
 cp .env.example .env
 # then edit `.env` with your settings
 ```
+
+Here's a complete `.env` — any variable from the [Environment Variables](#environment-variables) table below can be added too:
 
 ```env
 SERVER_PORT=7777
@@ -127,6 +130,12 @@ POLL_INTERVAL=60
 ENABLE_AUTO_UPDATE=true
 UPDATE_TIME=3600
 IDLE_WAIT=360
+SERVER_STOP_TIMEOUT=120
+
+# Logging
+LOG_TO_STDOUT=true
+MAX_LOG_SIZE=5242880
+LOG_RETENTION=5
 
 # Server settings (written to DedicatedServer.ini on container start)
 # OWNER_ID is required — your in-game "My Player Id" (see "Post-build setup")
@@ -142,22 +151,6 @@ SERVER_GUID=
 
 `.env` is **gitignored**, so passwords and your owner ID stay on your machine — mirror this repo's `.env.example` instead of committing a `.env`.
 
-Then reference it from `docker-compose.yml`:
-
-```yaml
-services:
-  dragonwilds:
-    image: andyaltsys/dragonwilds-dedicated-server:latest
-    container_name: dragonwilds
-    ports:
-      - "7777:7777/udp"
-    env_file:
-      - .env
-    volumes:
-      - ./server-data:/home/ubuntu/Steam
-    restart: unless-stopped
-```
-
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -171,7 +164,7 @@ services:
 | `BACKUP_DAILY` | true | Run daily scheduled backup |
 | `BACKUP_TIME` | 3:00 AM | Daily backup time (12-hour format with AM/PM) |
 | `BACKUP_RETENTION_DAYS` | 30 | Days to keep backups |
-| `POLL_INTERVAL` | 60 | Seconds between checks of the daily-backup schedule |
+| `POLL_INTERVAL` | 60 | Seconds between checks of the daily-backup schedule — also the retry interval while waiting for the server to become idle |
 | `IDLE_WAIT` | 360 | Seconds of no players before an update/backup proceeds (default: 6 min) |
 | `ENABLE_DISCORD_NOTIF` | false | Enable Discord webhook notifications |
 | `DISCORD_WEBHOOK_URL` | (empty) | Discord webhook URL |
@@ -185,7 +178,7 @@ These are applied to `server-data/RSDragonwilds/Saved/Config/LinuxServer/Dedicat
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OWNER_ID` | (empty) | **Required.** Your in-game "My Player Id" from the game's settings menu — grants that player admin. The container logs a warning if it is unset. |
+| `OWNER_ID` | (empty) | **Required.** Your in-game "My Player Id" (bottom of the game's Settings menu) — makes that player the server owner. The official docs say the server will not start without it; the container logs a warning if it is unset. |
 | `SERVER_NAME` | `Server-<timestamp>` | Server name shown in the world browser |
 | `DEFAULT_WORLD_NAME` | `World-<timestamp>` | World name used to find the server in the world browser |
 | `ADMIN_PASSWORD` | random string | Admin password for the server (only generated once if absent) |
@@ -241,6 +234,7 @@ docker run -d \
   -e DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx \
   -e BACKUP_TIME="3:00 AM" \
   -e TZ=America/New_York \
+  -e OWNER_ID=your-in-game-player-id \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
@@ -254,6 +248,7 @@ docker run -d \
   -e SERVER_PORT=7777 \
   -e BACKUP_AFTER_UPDATE=false \
   -e BACKUP_DAILY=false \
+  -e OWNER_ID=your-in-game-player-id \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
@@ -269,6 +264,7 @@ docker run -d \
   -e BACKUP_DAILY=true \
   -e BACKUP_TIME="3:00 AM" \
   -e TZ=America/New_York \
+  -e OWNER_ID=your-in-game-player-id \
   -v ./server-data:/home/ubuntu/Steam \
   andyaltsys/dragonwilds-dedicated-server:latest
 ```
@@ -291,7 +287,13 @@ Confirm the UDP port is actually forwarded/open on your router or firewall, not 
 Double-check `OwnerId` in `DedicatedServer.ini` (or `OWNER_ID` in `.env`) matches your in-game "My Player Id" exactly, and restart the container after editing it.
 
 **Updates or backups never seem to run**
-They only run once the server has been idle for `IDLE_WAIT` seconds (default 360) — if players are connected, both are skipped (and backups retry) by design.
+They only run once the server has been idle for `IDLE_WAIT` seconds (default 360) with no players online. Nothing is skipped: the update check **blocks** and logs its reason every 60 seconds (`docker exec dragonwilds tail -f /home/ubuntu/Steam/logs/entrypoint.log`), and the daily backup loop **retries every `POLL_INTERVAL`** seconds until it can proceed. If players stay online for a long time, that is why nothing has happened yet.
+
+**My `DedicatedServer.ini` edits disappeared**
+Two things can overwrite the file: the game itself, if you edit it while the server is running (a known limitation — the official docs warn about it), and the wrapper, which re-applies non-empty environment values on every container start (empty values leave your manual edits alone). Prefer `.env` for settings; if you edit the ini directly, do it while the container is stopped and make sure the matching environment variable is empty.
+
+**The game process crashed**
+If the server exits on its own, the wrapper stops the container rather than restarting the game in place (only scheduled maintenance restarts it internally). With `restart: unless-stopped` Docker brings the whole container back automatically.
 
 ## Contributing
 
