@@ -34,7 +34,7 @@ When the container starts, the entrypoint script (`scripts/entrypoint-wrapper.sh
 2. **Server install (first run only)** — if the server binary is missing, SteamCMD downloads the Dragonwilds dedicated server (up to 5 attempts, `validate`). Later starts do **not** re-verify files: the update loop below compares the local and remote Steam `buildid` every `UPDATE_TIME` seconds and runs SteamCMD only when they differ
 3. **Config sync** — applies your server settings (`OWNER_ID`, `SERVER_NAME`, `DEFAULT_WORLD_NAME`, `ADMIN_PASSWORD`, `WORLD_PASSWORD`, `SERVER_GUID`) to `DedicatedServer.ini` from environment variables / `.env` (empty values keep whatever is already in the ini)
 4. **Server launch** — starts the dedicated server on the configured UDP port
-5. **Player monitoring** — tails the game log every 5 seconds for join/leave events, tracking the online-player count and last-activity timestamp in files under the mounted volume (so idle state survives container restarts)
+5. **Player monitoring** — tails the game log every 5 seconds for join/leave events, tracking players by their stable account ID (not their display name, which can differ between Steam and the in-game character) and keeping the online-player count and last-activity timestamp in files under the mounted volume (so idle state survives container restarts)
 6. **Update & backup loops** — background loops check for updates (via SteamCMD) and run the daily backup on schedule
 7. **Supervision loop** — the wrapper waits on the game process: if it was stopped for maintenance it restarts it in place; if it crashed or exited on its own, the container exits so your `restart:` policy can bring it back
 
@@ -159,6 +159,7 @@ SERVER_GUID=
 | `TZ` | UTC | Timezone for scheduled backups |
 | `ENABLE_AUTO_UPDATE` | true | Enable automatic server updates |
 | `UPDATE_TIME` | 3600 | Seconds between update checks (default: 1 hour) |
+| `UPDATE_BACKOFF_MAX` | 86400 | Maximum delay between retries after an update cannot be verified (default: 24 hours) |
 | `SERVER_STOP_TIMEOUT` | 120 | Max seconds to wait for the server to stop cleanly (SIGTERM) before force-killing it (SIGKILL) during updates/backups |
 | `BACKUP_AFTER_UPDATE` | true | Backup saves after each update |
 | `BACKUP_DAILY` | true | Run daily scheduled backup |
@@ -272,10 +273,13 @@ docker run -d \
 ## Troubleshooting
 
 **Container exits immediately after starting**
-Check `docker logs dragonwilds` for a SteamCMD install error — this is usually a disk space or permissions issue on the mounted volume.
+Check `docker logs dragonwilds` for a SteamCMD install error — this is usually a disk space or permissions issue on the mounted volume. The wrapper verifies the server binary and app manifest after every install attempt; if they are missing it logs `server install failed` and exits so Docker can retry instead of pretending the install worked.
 
 **Server vanishes from the server browser after an auto-update**
 Since v0.4.0 the wrapper stops, updates, and restarts the server within the same container — it should never disappear after maintenance. If the game process still won't come back, check `./server-data/logs/entrypoint.log` for SteamCMD errors.
+
+**Server restarts every hour but the build never changes**
+This used to happen when SteamCMD's cached app info was stale: `app_update` exited successfully without actually installing the new build, the wrapper recorded the remote build as applied, restarted, and repeated on every check (issue #17). The wrapper now refreshes the cache with `+app_info_update 1`, re-reads `appmanifest_4019830.acf` after every attempt, and only reports success when the installed `buildid` matches Steam's public branch. Failed attempts are retried with exponential backoff (up to `UPDATE_BACKOFF_MAX`) instead of every `UPDATE_TIME`. If it still happens, look for `cached app info is probably stale` in `entrypoint.log`; removing `./server-data/steamapps/appmanifest_4019830.acf` and restarting the container forces SteamCMD to rebuild its state.
 
 **My server-settings changes aren't being applied**
 Settings are applied from the environment on every container start, but an **empty** value deliberately preserves what's already in `DedicatedServer.ini`. To change a setting, put an actual value in `.env` and restart the container.
@@ -298,6 +302,15 @@ If the server exits on its own, the wrapper stops the container rather than rest
 ## Contributing
 
 Bug reports and pull requests are welcome — please open an [issue](https://github.com/AltSystem42/runescape-dragonwilds-dedicated-server-docker/issues) with your container logs if you're reporting a problem.
+
+Player tracking, update verification, and install verification have regression tests covering the join/leave log formats (including Steam names that differ from character names), the update flow (including SteamCMD reporting success without changing the installed build), and first installs that silently do nothing. Run them with:
+
+```bash
+bash scripts/tests/test-player-tracker.sh
+bash scripts/tests/test-update-helper.sh
+bash scripts/tests/test-update-flow.sh
+bash scripts/tests/test-install-flow.sh
+```
 
 The Docker Hub repository description is maintained in [`dockerhub.md`](dockerhub.md) and synced automatically by the build workflow (`docker-build.yml`) on every push or tag.
 

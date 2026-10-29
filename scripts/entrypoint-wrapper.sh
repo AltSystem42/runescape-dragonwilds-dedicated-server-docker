@@ -24,13 +24,15 @@ fi
 
 # --- ENVIRONMENT VARIABLES ---
 APPID=4019830
+STEAMCMD="${STEAMCMD:-/home/ubuntu/steamcmd/steamcmd.sh}"
 SERVERDIR="${SERVERDIR:-/home/ubuntu/Steam}"
 CONFIGFILE="$SERVERDIR/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini"
 BACKUPDIR="$SERVERDIR/backup"
 LOGFILE="$SERVERDIR/logs/entrypoint.log"
 LAST_ACTIVITY_FILE="$SERVERDIR/.last_activity"
 PLAYER_COUNT_FILE="$SERVERDIR/.player_count"
-SERVER_RESTART_FILE="$SERVERDIR/.server_restart"
+PLAYERS_FILE="$SERVERDIR/.online_players"
+PLAYER_CHUNK_FILE="/tmp/dragonwilds-player-chunk.$$"
 SERVER_PID_FILE="$SERVERDIR/.server_pid"
 LAST_BACKUP_DATE_FILE="$SERVERDIR/.last_backup_date"
 LAST_APPLIED_BUILD_FILE="$SERVERDIR/.last_applied_build"
@@ -39,6 +41,7 @@ BACKUP_IN_PROGRESS_FILE="$SERVERDIR/.backup_in_progress"
 SERVER_PORT="${SERVER_PORT:-7777}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 UPDATE_TIME="${UPDATE_TIME:-3600}"              # How often (seconds) to check for updates (e.g. 3600 = every hour)
+UPDATE_BACKOFF_MAX="${UPDATE_BACKOFF_MAX:-86400}" # Max delay between retries after a failed update (default 24h)
 ENABLE_DISCORD_NOTIF="${ENABLE_DISCORD_NOTIF:-false}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 IDLE_WAIT="${IDLE_WAIT:-360}"
@@ -60,6 +63,14 @@ SERVER_GUID="${SERVER_GUID}"                    # Provided
 SERVER_NAME="${SERVER_NAME}"                    # Provided
 WORLD_PASSWORD="${WORLD_PASSWORD}"              # Optional
 DEFAULT_WORLD_NAME="${DEFAULT_WORLD_NAME}"      # Provided
+
+# Player tracking and update verification live in separate helpers so they
+# can be unit-tested without running the container.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=player-tracker.sh
+source "$SCRIPT_DIR/player-tracker.sh"
+# shellcheck source=update-helper.sh
+source "$SCRIPT_DIR/update-helper.sh"
 
 HOME=/home/ubuntu
 mkdir -p "$BACKUPDIR" "$SERVERDIR/steamapps" "$(dirname "$LOGFILE")"
@@ -99,21 +110,46 @@ send_discord() {
 }
 
 # --- INSTALL / VERIFY SERVER FILES VIA STEAMCMD ---
+# SteamCMD can exit 0 without actually installing anything (stale app-info
+# cache, disk/permission problems). Verify the manifest and binary after each
+# attempt instead of reporting success based on the exit status alone.
+# Returns 0 only when the install is complete, 1 otherwise.
 install_or_verify_server() {
+    local manifest="$SERVERDIR/steamapps/appmanifest_$APPID.acf"
+    local binary="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
+    local installed_build="" attempt
+
     log "=== Installing/verifying server files via SteamCMD ==="
     send_discord "📥 Installing Dragonwilds Dedicated Server — this may take a while..."
-    for i in {1..5}; do
-        log "SteamCMD attempt $i..."
-        /home/ubuntu/steamcmd/steamcmd.sh \
+
+    for attempt in {1..5}; do
+        log "SteamCMD attempt $attempt..."
+        if "$STEAMCMD" \
             +force_install_dir "$SERVERDIR" \
             +login anonymous \
+            +app_info_update 1 \
             +app_update $APPID validate \
-            +quit && break
-        log "SteamCMD failed, retrying in 5 seconds..."
+            +quit; then
+            installed_build=$(parse_manifest_buildid "$manifest" 2>/dev/null || true)
+            if [ -n "$installed_build" ] && [ -f "$binary" ]; then
+                log "=== SteamCMD install/verify complete (build $installed_build) ==="
+                send_discord "✅ Dragonwilds Dedicated Server installed (build $installed_build)."
+                return 0
+            fi
+            log "SteamCMD reported success but the install is incomplete — retrying in 5 seconds..."
+        else
+            log "SteamCMD failed, retrying in 5 seconds..."
+        fi
         sleep 5
     done
-    log "=== SteamCMD install/verify complete ==="
-    send_discord "✅ Dragonwilds Dedicated Server installed."
+
+    if [ ! -f "$binary" ]; then
+        log "ERROR: server binary is still missing at $binary after 5 SteamCMD attempts"
+    else
+        log "ERROR: server manifest has no buildid at $manifest after 5 SteamCMD attempts"
+    fi
+    send_discord "❌ Dragonwilds Dedicated Server install failed — check the container logs."
+    return 1
 }
 
 # -- DEDICATEDSERVER.INI ---
@@ -271,14 +307,32 @@ parse_schedule_time() {
     echo "$hour $minute"
 }
 
+# --- LAST-ACTIVITY TIMESTAMP ---
+# Written atomically and read defensively: a truncated/empty file would
+# otherwise break the arithmetic below (and, under set -e, the container).
+record_activity() {
+    local tmp="${LAST_ACTIVITY_FILE}.tmp"
+    date +%s > "$tmp" && mv "$tmp" "$LAST_ACTIVITY_FILE"
+}
+
+read_last_activity() {
+    local now value
+    now=$(date +%s)
+    value=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || true)
+    case "$value" in
+        ''|*[!0-9]*) echo "$now" ;;
+        *) echo "$value" ;;
+    esac
+}
+
 # --- CHECK IF SERVER IS IDLE (no players + 360s since last activity) ---
 # Returns 0 (true) if idle, 1 (false) if not
 is_idle() {
     local now last_activity idle player_count
     now=$(date +%s)
-    last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+    last_activity=$(read_last_activity)
     idle=$((now - last_activity))
-    player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+    player_count=$(read_count)
 
     if [ "$player_count" -eq 0 ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
         return 0
@@ -292,9 +346,9 @@ wait_for_idle() {
     while true; do
         local now last_activity idle player_count
         now=$(date +%s)
-        last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+        last_activity=$(read_last_activity)
         idle=$((now - last_activity))
-        player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+        player_count=$(read_count)
 
         if [ "$player_count" -eq 0 ] && [ "$idle" -ge "$IDLE_WAIT" ]; then
             log "$label: Server is idle. Proceeding."
@@ -332,38 +386,50 @@ run_daily_backup() {
 }
 
 # --- RUN UPDATE ---
+# Returns 0 when the server is up to date (or the check was inconclusive),
+# and 1 when an update was attempted but could not be verified. The update
+# loop uses that status to back off instead of retrying (and restarting the
+# server) every UPDATE_TIME.
 run_update() {
+    local manifest="$SERVERDIR/steamapps/appmanifest_$APPID.acf"
+    local appinfo_tmp local_build remote_build current_build
+    local update_succeeded=false update_verified=false
+
     log "=== Backing up config ==="
     [ -f "$CONFIGFILE" ] && cp "$CONFIGFILE" "$BACKUPDIR/DedicatedServer.ini"
 
     log "=== Checking for updates ==="
-    LOCAL_BUILD=$(grep '"buildid"' "$SERVERDIR/steamapps/appmanifest_$APPID.acf" 2>/dev/null | head -n1 | sed 's/.*"\([0-9]*\)".*/\1/')
-    LOCAL_BUILD="${LOCAL_BUILD:-unknown}"
-    log "Local build: $LOCAL_BUILD"
+    local_build=$(parse_manifest_buildid "$manifest" 2>/dev/null || echo "unknown")
+    log "Local build: $local_build"
 
-    REMOTE_BUILD=$(/home/ubuntu/steamcmd/steamcmd.sh +login anonymous +app_info_print $APPID +quit \
-        | grep '"buildid"' | head -n1 | sed 's/.*"\([0-9]*\)".*/\1/')
-    log "Remote build: $REMOTE_BUILD"
+    # Refresh SteamCMD's cached app info before reading the published build.
+    # Without +app_info_update 1 the cache can report an outdated build and
+    # make app_update a no-op even though Steam has published a newer one.
+    appinfo_tmp=$(mktemp "${TMPDIR:-/tmp}/dragonwilds-appinfo.XXXXXX")
+    "$STEAMCMD" \
+        +login anonymous \
+        +app_info_update 1 \
+        +app_info_print $APPID \
+        +quit > "$appinfo_tmp" 2>&1 || true
+    remote_build=$(parse_appinfo_buildid "$appinfo_tmp" public 2>/dev/null || true)
+    rm -f "$appinfo_tmp"
+    log "Remote build: ${remote_build:-unknown}"
 
-    if [ -z "$REMOTE_BUILD" ]; then
+    if [ -z "$remote_build" ]; then
         log "Could not determine remote build ID — skipping update check"
-        return
+        return 0
     fi
 
-    LAST_APPLIED_BUILD=$(cat "$LAST_APPLIED_BUILD_FILE" 2>/dev/null || echo "")
-
-    if [ "$LOCAL_BUILD" = "$REMOTE_BUILD" ]; then
-        log "Server is up to date (build $LOCAL_BUILD) — no update needed"
-        return
+    if [ "$local_build" = "$remote_build" ]; then
+        log "Server is up to date (build $local_build) — no update needed"
+        return 0
     fi
 
-    if [ "$REMOTE_BUILD" = "$LAST_APPLIED_BUILD" ] && [ "$LOCAL_BUILD" = "$LAST_APPLIED_BUILD" ]; then
-        log "Update to build $REMOTE_BUILD was already applied — skipping"
-        return
-    fi
-
-    log "Update available (local: $LOCAL_BUILD → remote: $REMOTE_BUILD) — running SteamCMD"
-    send_discord "🛠️ Dragonwilds server update detected (build $REMOTE_BUILD) — waiting for idle before updating..."
+    # LAST_APPLIED_BUILD is only written after a *verified* update. Older
+    # versions recorded it whenever SteamCMD exited 0, which made the wrapper
+    # skip further attempts while still running the old build (issue #17).
+    log "Update available (local: $local_build → remote: $remote_build) — running SteamCMD"
+    send_discord "🛠️ Dragonwilds server update detected (build $remote_build) — waiting for idle before updating..."
 
     wait_for_idle "Update"
 
@@ -374,14 +440,14 @@ run_update() {
 
     stop_server
 
-    UPDATE_SUCCEEDED=false
     for i in {1..5}; do
         log "SteamCMD attempt $i..."
-        /home/ubuntu/steamcmd/steamcmd.sh \
+        "$STEAMCMD" \
             +force_install_dir "$SERVERDIR" \
             +login anonymous \
+            +app_info_update 1 \
             +app_update $APPID validate \
-            +quit && UPDATE_SUCCEEDED=true && break
+            +quit && update_succeeded=true && break
         log "SteamCMD failed, retrying in 5 seconds..."
         sleep 5
     done
@@ -389,11 +455,19 @@ run_update() {
     log "=== Restoring config ==="
     [ -f "$BACKUPDIR/DedicatedServer.ini" ] && cp "$BACKUPDIR/DedicatedServer.ini" "$CONFIGFILE"
 
-    if [ "$UPDATE_SUCCEEDED" = "true" ]; then
-        echo "$REMOTE_BUILD" > "$LAST_APPLIED_BUILD_FILE"
-        log "Recorded applied build: $REMOTE_BUILD"
+    # Never trust SteamCMD's exit status alone. Re-read the installed manifest
+    # and only record success when the build actually changed.
+    current_build=$(parse_manifest_buildid "$manifest" 2>/dev/null || echo "unknown")
+    if [ "$current_build" = "$remote_build" ]; then
+        update_verified=true
+        echo "$remote_build" > "$LAST_APPLIED_BUILD_FILE"
+        log "Update verified — local build is now $current_build"
+    elif [ "$update_succeeded" = "true" ]; then
+        log "WARNING: SteamCMD reported success but the local build is still $current_build (expected $remote_build)."
+        log "         SteamCMD's cached app info is probably stale; the server will keep running the old build."
+        log "         Retrying later with backoff. If this persists, remove $manifest and restart the container."
     else
-        log "WARNING: SteamCMD failed after 5 attempts — update may be incomplete"
+        log "WARNING: SteamCMD failed after 5 attempts — update was not applied (local build: $current_build)"
     fi
 
     if [ "$BACKUP_AFTER_UPDATE" = "true" ]; then
@@ -404,10 +478,16 @@ run_update() {
         log "=== Post-update backup skipped (BACKUP_AFTER_UPDATE=false) ==="
     fi
 
-    send_discord "✅ Dragonwilds server updated to build $REMOTE_BUILD — restarting server."
+    if [ "$update_verified" = "true" ]; then
+        send_discord "✅ Dragonwilds server updated to build $remote_build — restarting server."
+    else
+        send_discord "⚠️ Dragonwilds update to build $remote_build could not be applied (still on $current_build). Restarting the existing server and retrying later."
+    fi
 
     # Release the main loop to restart the server
     rm -f "$UPDATE_IN_PROGRESS_FILE"
+
+    [ "$update_verified" = "true" ]
 }
 
 # --- MONITOR PLAYERS ---
@@ -415,7 +495,7 @@ run_update() {
 # associative arrays cannot cross subshell boundaries.
 monitor_players() {
     local LOG="$SERVERDIR/RSDragonwilds/Saved/Logs/RSDragonwilds.log"
-    local PLAYERS_FILE="$SERVERDIR/.online_players"
+    local chunk="$PLAYER_CHUNK_FILE"
 
     log "Waiting for server log file..."
     while [ ! -f "$LOG" ] || [ ! -s "$LOG" ]; do
@@ -423,27 +503,20 @@ monitor_players() {
     done
     sleep 2
 
+    # The server has just started, so nobody is online yet. Start reading at
+    # the current end of the log — it only contains startup output.
     local LAST_READ
-    if [ -f "$SERVER_RESTART_FILE" ]; then
-        rm -f "$SERVER_RESTART_FILE"
-        log "Server restarted — resetting log position to 0"
-        LAST_READ=0
-    else
-        LAST_READ=$(wc -l < "$LOG")
-    fi
+    LAST_READ=$(wc -l < "$LOG")
 
-    > "$PLAYERS_FILE"
-    echo "0" > "$PLAYER_COUNT_FILE"
-
-    if [ -f "$LAST_ACTIVITY_FILE" ]; then
-        : # keep existing timestamp
-    else
-        date +%s > "$LAST_ACTIVITY_FILE"
-    fi
+    players_reset
+    [ -f "$LAST_ACTIVITY_FILE" ] || record_activity
 
     local log_inode
     log_inode=$(stat -c %i "$LOG")
     log "Player monitor started at line $LAST_READ (inode: $log_inode)"
+
+    : > "$chunk"
+    trap 'rm -f "$PLAYER_CHUNK_FILE"' EXIT
 
     while true; do
         local current_inode
@@ -453,45 +526,55 @@ monitor_players() {
             log "Log file recreated (server restarted) — resetting monitor"
             LAST_READ=0
             log_inode=$current_inode
-            date +%s > "$LAST_ACTIVITY_FILE"
-            > "$PLAYERS_FILE"
-            echo "0" > "$PLAYER_COUNT_FILE"
+            record_activity
+            players_reset
         fi
 
-        local TOTAL_LINES NEW_LINES
-        TOTAL_LINES=$(wc -l < "$LOG")
-        NEW_LINES=$((TOTAL_LINES - LAST_READ))
+        local TOTAL_LINES
+        # If the log is momentarily missing, keep the previous position and
+        # retry next poll instead of letting set -e kill the monitor.
+        TOTAL_LINES=$(wc -l < "$LOG" 2>/dev/null || echo "$LAST_READ")
 
-        if [ "$NEW_LINES" -gt 0 ]; then
-            local line player
-            while IFS= read -r line; do
-                if [[ "$line" == *"LogNet: Join succeeded:"* ]]; then
-                    player=$(echo "$line" | grep -oE 'LogNet: Join succeeded: ([^[:space:]]+)' | sed 's/.*LogNet: Join succeeded: //')
-                    if [ -n "$player" ]; then
-                        grep -qxF "$player" "$PLAYERS_FILE" 2>/dev/null || echo "$player" >> "$PLAYERS_FILE"
-                        local count
-                        count=$(wc -l < "$PLAYERS_FILE")
-                        echo "$count" > "$PLAYER_COUNT_FILE"
-                        date +%s > "$LAST_ACTIVITY_FILE"
-                        log "Player connected: $player (online: $count)"
-                        send_discord "🟢 Player connected: $player"
-                    fi
-                fi
+        # A log that shrank was truncated in place rather than replaced.
+        # Resume from the top, otherwise events are ignored until the file
+        # grows past the old line count.
+        if [ "$TOTAL_LINES" -lt "$LAST_READ" ]; then
+            log "Log file truncated — resetting monitor"
+            LAST_READ=0
+            players_reset
+        fi
 
-                if [[ "$line" == *"LogDominionPlayerController: ClientRequestDisconnect"* ]]; then
-                    player=$(echo "$line" | grep -oE 'Character Name\[[^]]+\]' | sed 's/Character Name\[//;s/\]//')
-                    if [ -n "$player" ]; then
-                        sed -i "/^${player}$/d" "$PLAYERS_FILE"
-                        local count
-                        count=$(wc -l < "$PLAYERS_FILE")
-                        echo "$count" > "$PLAYER_COUNT_FILE"
-                        date +%s > "$LAST_ACTIVITY_FILE"
-                        log "Player disconnected: $player (online: $count)"
-                        send_discord "🔴 Player disconnected: $player"
-                    fi
-                fi
-            done < <(tail -n "$NEW_LINES" "$LOG")
-            LAST_READ=$TOTAL_LINES
+        if [ "$TOTAL_LINES" -gt "$LAST_READ" ]; then
+            # Read from an absolute line offset so lines written between the
+            # wc above and this read are neither skipped nor processed twice
+            # (tail -n N would shift the window and duplicate events).
+            # A failed read leaves an empty chunk, so we simply retry next poll.
+            tail -n "+$((LAST_READ + 1))" "$LOG" > "$chunk" 2>/dev/null || true
+
+            local event kind name
+            while IFS= read -r event; do
+                kind=$(printf '%s\n' "$event" | cut -f1)
+                name=$(printf '%s\n' "$event" | cut -f3)
+                case "$kind" in
+                    join)
+                        record_activity
+                        log "Player connected: $name (online: $(read_count))"
+                        send_discord "🟢 Player connected: $name"
+                        ;;
+                    leave)
+                        record_activity
+                        log "Player disconnected: $name (online: $(read_count))"
+                        send_discord "🔴 Player disconnected: $name"
+                        ;;
+                esac
+            done < <(process_player_log_chunk "$chunk")
+
+            # Advance by the number of complete lines actually read. A partial
+            # trailing line is re-read next poll; add/remove are idempotent, so
+            # that cannot double-count or re-notify.
+            local read_lines
+            read_lines=$(wc -l < "$chunk")
+            LAST_READ=$((LAST_READ + read_lines))
         fi
 
         sleep "$PLAYER_CHECK_INTERVAL"
@@ -505,13 +588,16 @@ log "=== Starting Dragonwilds Server ==="
 log "Config: AUTO_UPDATE=$ENABLE_AUTO_UPDATE, UPDATE_TIME=${UPDATE_TIME}s, BACKUP_AFTER_UPDATE=$BACKUP_AFTER_UPDATE, BACKUP_DAILY=$BACKUP_DAILY, BACKUP_TIME=$BACKUP_TIME"
 
 # Remove any stale maintenance flags left by a previously killed container
-rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE" "$SERVER_PID_FILE"
+rm -f "$UPDATE_IN_PROGRESS_FILE" "$BACKUP_IN_PROGRESS_FILE" "$SERVER_PID_FILE" "$PLAYER_CHUNK_FILE"
 
 # Install server files if not present (first run or missing binary)
 BINARY="$SERVERDIR/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping"
 if [ ! -f "$BINARY" ]; then
     log "Server binary not found — running initial SteamCMD install"
-    install_or_verify_server
+    if ! install_or_verify_server; then
+        log "ERROR: server install failed — exiting so Docker can retry the container"
+        exit 1
+    fi
 fi
 
 prepare_dedicated_server_ini
@@ -529,10 +615,24 @@ monitor_players
 if [ "$ENABLE_AUTO_UPDATE" = "true" ]; then
     log "Auto-update enabled — checking every ${UPDATE_TIME}s"
     (
+        update_failures=0
         while true; do
-            sleep "$UPDATE_TIME"
+            # Back off after a failed/unverified update so a stale SteamCMD
+            # cache does not restart the server every UPDATE_TIME forever.
+            if [ "$update_failures" -eq 0 ]; then
+                sleep "$UPDATE_TIME"
+            else
+                retry_delay=$(update_retry_delay "$update_failures" "$UPDATE_TIME" "$UPDATE_BACKOFF_MAX")
+                log "Waiting ${retry_delay}s before the next update attempt (failure #${update_failures})"
+                sleep "$retry_delay"
+            fi
             log "=== Running scheduled update check ==="
-            run_update
+            if run_update; then
+                update_failures=0
+            else
+                update_failures=$((update_failures + 1))
+                log "WARNING: update was not applied — backing off before the next attempt"
+            fi
         done
     ) &
     UPDATE_LOOP_PID=$!
@@ -564,12 +664,12 @@ if [ "$BACKUP_DAILY" = "true" ]; then
                         run_daily_backup
                         echo "$today" > "$LAST_BACKUP_DATE_FILE"
                     else
-                        player_count=$(cat "$PLAYER_COUNT_FILE" 2>/dev/null || echo "0")
+                        player_count=$(read_count)
                         if [ "$player_count" -gt 0 ]; then
                             log "Backup: $player_count player(s) online — retrying in ${POLL_INTERVAL}s..."
                         else
                             now=$(date +%s)
-                            last_activity=$(cat "$LAST_ACTIVITY_FILE" 2>/dev/null || echo "$now")
+                            last_activity=$(read_last_activity)
                             idle=$((now - last_activity))
                             log "Backup: Waiting for idle timeout (${idle}s / ${IDLE_WAIT}s) — retrying in ${POLL_INTERVAL}s..."
                         fi
@@ -604,9 +704,8 @@ while true; do
             fi
         done
         log "Maintenance complete — restarting server"
-        touch "$SERVER_RESTART_FILE"
         start_server
-        # monitor_players inode watch handles the new log automatically
+        # monitor_players detects the recreated log and resets its state
     else
         log "Server exited unexpectedly — container stopping"
         break

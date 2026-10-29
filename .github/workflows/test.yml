@@ -1,0 +1,41 @@
+name: Shell tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          bash -n scripts/entrypoint-wrapper.sh
+          bash -n scripts/player-tracker.sh
+          bash -n scripts/update-helper.sh
+          bash -n scripts/tests/test-player-tracker.sh
+          bash -n scripts/tests/test-update-helper.sh
+          bash -n scripts/tests/test-update-flow.sh
+          bash -n scripts/tests/test-install-flow.sh
+
+      - name: Run player tracker tests
+        run: bash scripts/tests/test-player-tracker.sh
+
+      - name: Run update helper tests
+        run: bash scripts/tests/test-update-helper.sh
+
+      - name: Run update flow tests
+        run: bash scripts/tests/test-update-flow.sh
+
+      - name: Run install flow tests
+        run: bash scripts/tests/test-install-flow.sh

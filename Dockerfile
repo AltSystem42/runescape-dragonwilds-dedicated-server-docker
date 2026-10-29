@@ -65,8 +65,10 @@ ENV DISCORD_WEBHOOK_URL=""
 # Timezone (can be overridden via .env)
 ENV TZ=UTC
 
-# Copy wrapper script only
+# Copy wrapper script and its helpers
 COPY scripts/entrypoint-wrapper.sh /home/ubuntu/entrypoint-wrapper.sh
+COPY scripts/player-tracker.sh /home/ubuntu/player-tracker.sh
+COPY scripts/update-helper.sh /home/ubuntu/update-helper.sh
 RUN chmod +x /home/ubuntu/entrypoint-wrapper.sh
 
 # Configure timezone at build time default; runtime TZ env var is respected

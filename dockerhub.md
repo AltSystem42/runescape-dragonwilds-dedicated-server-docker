@@ -9,11 +9,11 @@ This image uses SteamCMD to download and install the official dedicated server b
 
 ## Features
 
-- **Auto-updates** — Checks for new server builds every hour by default (`UPDATE_TIME`) and only runs SteamCMD when the local build differs from Steam's
+- **Auto-updates** — Checks for new server builds every hour by default (`UPDATE_TIME`) and only runs SteamCMD when the local build differs from Steam's; the installed build is re-verified afterwards, and failed attempts back off instead of restarting the server every hour
 - **Idle-aware maintenance** — Updates and backups wait until no player has been online for `IDLE_WAIT` seconds, then stop and restart the game process *inside the same container* — the container never exits mid-update
 - **Daily backups** — Scheduled at a configurable time (`BACKUP_TIME`), catching up if the container was down at that moment, and pruned after `BACKUP_RETENTION_DAYS`
 - **Post-update backups** — Automatic backup after each server update
-- **Player monitoring** — Tails the game log for join/leave events, tracking the online player count and last activity
+- **Player monitoring** — Tails the game log for join/leave events, tracking the online player count and last activity by stable account ID (robust when Steam and in-game names differ)
 - **Discord notifications** — Alerts for installs, updates, backups, and player events
 - **Server settings via env** — Configure owner ID, server name, world name, and passwords with environment variables or `.env`; an empty value keeps whatever is already in `DedicatedServer.ini`
 - **Config preservation** — `DedicatedServer.ini` is backed up before each update and restored afterwards
@@ -60,6 +60,7 @@ For full configuration options (server settings, updates, backups, Discord, logg
 | Tag | Description |
 |-----|-------------|
 | `latest` | Most recent release |
+| `v0.5.0` | Fix hourly update/restart loop — refresh SteamCMD app info and verify installed builds; track players by stable account ID (fixes idle detection when Steam and in-game names differ); verify first installs; add regression tests and CI |
 | `v0.4.0` | Major release — server reliably restarts after auto-update/backup; server settings via `.env` (OWNER_ID, SERVER_NAME, etc.); separate rotated script log; `.env` no longer tracked (use `.env.example`) |
 | `v0.3.5` | Fix update subshell killed before steamcmd |
 | `v0.3.4` | Fix update notification firing every hour |
